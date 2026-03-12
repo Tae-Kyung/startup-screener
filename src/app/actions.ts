@@ -1,6 +1,6 @@
 'use server';
 
-import { parseExcel, computeRuleStatus, ApplicantData } from '@/lib/excel-utils';
+import { parseExcel, ApplicantData } from '@/lib/excel-utils';
 import { simulateLLMCheck, LLMResult } from '@/lib/llm-engine';
 import { createClient } from '@/lib/supabase/server';
 
@@ -22,16 +22,14 @@ async function runInBatches<T, R>(
 }
 
 // ----------------------------------------------------------------
-// 유틸: 크로스체크 — 규칙 엔진 vs LLM 불일치 시 Pending
+// 유틸: LLM 결과 → final_status 매핑
 // ----------------------------------------------------------------
-function crossCheck(
-  ruleStatus: 'Pass' | 'Fail',
+function llmToFinalStatus(
   llmStatus: 'Pass' | 'Fail' | 'Pending'
 ): 'Approved' | 'Rejected' | 'Pending' {
-  if (llmStatus === 'Pending') return 'Pending';
-  if (ruleStatus === 'Pass' && llmStatus === 'Pass') return 'Approved';
-  if (ruleStatus === 'Fail' && llmStatus === 'Fail') return 'Rejected';
-  return 'Pending'; // 불일치 → 사람이 검토
+  if (llmStatus === 'Pass') return 'Approved';
+  if (llmStatus === 'Fail') return 'Rejected';
+  return 'Pending';
 }
 
 // ----------------------------------------------------------------
@@ -211,12 +209,11 @@ export async function processExcelAction(formData: FormData, projectId: string) 
     )
   );
 
-  // 크로스체크 및 결과 조합
+  // LLM 결과 조합 (규칙 엔진 미사용)
   const processedApplicants = newApplicants.map((applicant, i) => {
     const { status: llmStatus, reasoning: llmReasoning } = llmResults[i];
-    const ruleStatus = computeRuleStatus(applicant.isRegional);
-    const finalStatus = crossCheck(ruleStatus, llmStatus);
-    return { ...applicant, ruleStatus, llmStatus, llmReasoning, finalStatus };
+    const finalStatus = llmToFinalStatus(llmStatus);
+    return { ...applicant, llmStatus, llmReasoning, finalStatus };
   });
 
   // 생년월일 포맷 정규화 (Postgres DATE 타입 대응)
@@ -242,7 +239,7 @@ export async function processExcelAction(formData: FormData, projectId: string) 
     age: app.age,
     is_youth: app.isYouth,
     is_regional: app.isRegional,
-    rule_status: app.ruleStatus,
+    rule_status: null,
     llm_status: app.llmStatus,
     llm_reasoning: app.llmReasoning,
     final_status: app.finalStatus,
@@ -371,14 +368,13 @@ export async function reEvaluateApplicantsAction(projectId: string) {
     )
   );
 
-  // 크로스체크 후 업데이트 목록 생성
+  // LLM 결과로 업데이트 목록 생성 (규칙 엔진 미사용)
   const updates = applicants.map((app, i) => {
     const { status: llmStatus, reasoning: llmReasoning } = llmResults[i];
-    const ruleStatus = computeRuleStatus(app.is_regional ?? false);
-    const finalStatus = crossCheck(ruleStatus, llmStatus);
+    const finalStatus = llmToFinalStatus(llmStatus);
     return {
       id: app.id,
-      rule_status: ruleStatus,
+      rule_status: null,
       llm_status: llmStatus,
       llm_reasoning: llmReasoning,
       final_status: finalStatus,

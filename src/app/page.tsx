@@ -73,9 +73,8 @@ const translations = {
       name: "성명 / 과제번호",
       enterprise: "기업명",
       history: "업력 유형",
-      ruleStatus: "규칙",
-      llmStatus: "AI",
-      finalStatus: "최종",
+      llmStatus: "AI 판단",
+      finalStatus: "최종 상태",
       action: "상세",
       youth: "청년",
       empty: "데이터가 없습니다",
@@ -169,9 +168,8 @@ const translations = {
       name: "Name / Task No.",
       enterprise: "Enterprise",
       history: "History",
-      ruleStatus: "Rule",
-      llmStatus: "AI",
-      finalStatus: "Final",
+      llmStatus: "AI Judgment",
+      finalStatus: "Final Status",
       action: "Detail",
       youth: "Youth",
       empty: "No data available",
@@ -749,19 +747,14 @@ export default function Home() {
                     <thead className="sticky top-0 z-10 bg-card border-b">
                       <tr className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
                         <th className="px-4 py-4">{t.table.name}</th>
-                        <th className="px-3 py-4">{t.table.ruleStatus}</th>
                         <th className="px-3 py-4">{t.table.llmStatus}</th>
                         <th className="px-3 py-4">{t.table.finalStatus}</th>
                         <th className="px-4 py-4 text-right">{t.table.action}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-muted/10">
-                      {filteredApplicants.map(applicant => {
-                        const mismatch = applicant.ruleStatus && applicant.llmStatus &&
-                          applicant.ruleStatus !== applicant.llmStatus &&
-                          applicant.llmStatus !== 'Pending';
-                        return (
-                          <tr key={applicant.id} className={`group hover:bg-primary/5 transition-all ${mismatch ? 'bg-orange-500/5' : ''}`}>
+                      {filteredApplicants.map(applicant => (
+                          <tr key={applicant.id} className="group hover:bg-primary/5 transition-all">
                             <td className="px-4 py-4">
                               <div className="space-y-1">
                                 <div className="font-black text-sm group-hover:text-primary transition-colors flex items-center gap-2">
@@ -772,7 +765,6 @@ export default function Home() {
                                 <div className="font-mono text-[10px] text-muted-foreground">{applicant.taskNumber}</div>
                               </div>
                             </td>
-                            <td className="px-3 py-4">{statusBadge(applicant.ruleStatus, 'rule')}</td>
                             <td className="px-3 py-4">{statusBadge(applicant.llmStatus, 'llm')}</td>
                             <td className="px-3 py-4">{statusBadge(applicant.finalStatus, 'final')}</td>
                             <td className="px-4 py-4 text-right">
@@ -784,8 +776,7 @@ export default function Home() {
                               </button>
                             </td>
                           </tr>
-                        );
-                      })}
+                      ))}
                     </tbody>
                   </table>
                 ) : (
@@ -827,12 +818,12 @@ export default function Home() {
               <div className="p-5 rounded-2xl bg-primary/5 border border-primary/20 space-y-2">
                 <div className="flex items-center gap-2 text-primary">
                   <ShieldCheck className="h-5 w-5" />
-                  <span className="text-xs font-black uppercase tracking-widest">Cross-Check Engine</span>
+                  <span className="text-xs font-black uppercase tracking-widest">AI Assisted Review</span>
                 </div>
                 <p className="text-sm font-medium leading-relaxed">
                   {lang === 'ko'
-                    ? "규칙 엔진과 AI 판단이 다를 경우 자동으로 Pending 처리됩니다. 오렌지 행이 불일치 건입니다."
-                    : "Rows highlighted in orange indicate rule/AI mismatch — auto-flagged as Pending."}
+                    ? "AI가 설정된 심사 기준에 따라 모든 지원자를 분석했습니다. Pending 건을 필터링하여 검토하세요."
+                    : "AI has analyzed all applicants based on your criteria. Filter by Pending to review flagged cases."}
                 </p>
               </div>
             </div>
@@ -860,7 +851,6 @@ export default function Home() {
                     <span className="text-xs font-black text-primary uppercase tracking-widest">{selectedApplicant.historyType}</span>
                   </div>
                   <div className="flex gap-1.5 mt-2">
-                    {statusBadge(selectedApplicant.ruleStatus, 'rule')}
                     {statusBadge(selectedApplicant.llmStatus, 'llm')}
                     {statusBadge(selectedApplicant.finalStatus, 'final')}
                   </div>
@@ -895,11 +885,7 @@ export default function Home() {
               {/* AI Reasoning Tab */}
               {modalTab === 'reasoning' && (
                 <div className="space-y-6 animate-in slide-in-from-left-4 duration-300">
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="p-4 rounded-2xl bg-accent/20 border text-center">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">Rule Engine</p>
-                      {statusBadge(selectedApplicant.ruleStatus, 'rule')}
-                    </div>
+                  <div className="grid grid-cols-2 gap-3">
                     <div className="p-4 rounded-2xl bg-accent/20 border text-center">
                       <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">AI (LLM)</p>
                       {statusBadge(selectedApplicant.llmStatus, 'llm')}
