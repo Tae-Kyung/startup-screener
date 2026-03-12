@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Upload, FileText, CheckCircle2, AlertCircle, BarChart3, Users, Loader2, Globe,
   ChevronRight, X, Info, LogOut, LayoutDashboard, Rocket, ShieldCheck, Plus,
   FolderKanban, Trash2, Settings, Save, CheckCheck, XCircle, ClipboardCheck,
+  FolderOpen,
 } from "lucide-react";
 import {
   createProjectAction, getProjectsAction, getProjectApplicantsAction,
@@ -58,8 +59,12 @@ const translations = {
       saveAndReEval: "저장 및 다시 평가",
       reEvaluating: "재평가 중...",
     },
-    uploadBtn: "신청서 업로드 (application.xlsx)",
+    uploadBtn: "엑셀만 업로드",
+    folderUploadBtn: "dataset 폴더 업로드 (PDF 분석)",
     processing: "처리 중...",
+    folderProcessing: "서류 분석 중...",
+    folderProgress: (current: number, total: number, taskNumber: string) =>
+      `분석 중 ${current}/${total}: 과제번호 ${taskNumber}`,
     stats: {
       total: "전체 지원자",
       passed: "심사 적격 (Approved)",
@@ -155,8 +160,12 @@ const translations = {
       saveAndReEval: "Save & Re-evaluate",
       reEvaluating: "Re-evaluating...",
     },
-    uploadBtn: "Upload application.xlsx",
+    uploadBtn: "Upload Excel Only",
+    folderUploadBtn: "Upload dataset Folder (PDF Analysis)",
     processing: "Processing...",
+    folderProcessing: "Analyzing documents...",
+    folderProgress: (current: number, total: number, taskNumber: string) =>
+      `Analyzing ${current}/${total}: Task ${taskNumber}`,
     stats: {
       total: "Total Applicants",
       passed: "Approved",
@@ -265,6 +274,11 @@ export default function Home() {
   // 수동 확정
   const [finalizeComment, setFinalizeComment] = useState("");
   const [isFinalizing, setIsFinalizing] = useState(false);
+
+  // dataset 폴더 업로드 (PDF 분석)
+  const [isFolderProcessing, setIsFolderProcessing] = useState(false);
+  const [folderProgress, setFolderProgress] = useState<{ current: number; total: number; taskNumber: string } | null>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const supabase = createClient();
 
@@ -445,6 +459,75 @@ export default function Home() {
       alert(lang === 'ko' ? `처리 실패: ${error.message || "엑셀 형식을 확인하세요."}` : `Processing failed: ${error.message || "Check Excel format."}`);
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  // dataset 폴더 업로드 (PDF 분석) 핸들러
+  const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    if (!selectedProject) {
+      alert(lang === 'ko' ? "먼저 프로젝트를 생성하거나 선택해주세요." : "Please create or select a project first.");
+      return;
+    }
+
+    setIsFolderProcessing(true);
+    setFolderProgress({ current: 0, total: 0, taskNumber: '' });
+
+    const formData = new FormData();
+    for (const file of files) {
+      // webkitRelativePath를 파일명으로 사용해 서버에서 폴더 구조 복원
+      const path = (file as any).webkitRelativePath || file.name;
+      formData.append('files', file, path);
+    }
+
+    try {
+      const response = await fetch(`/api/process-dataset?projectId=${selectedProject.id}`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error(`서버 오류: ${response.statusText}`);
+      if (!response.body) throw new Error('응답 스트림이 없습니다.');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const lines = decoder.decode(value).split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line);
+            if (event.type === 'start') {
+              setFolderProgress({ current: 0, total: event.total, taskNumber: '' });
+            } else if (event.type === 'progress') {
+              setFolderProgress({ current: event.current, total: event.total, taskNumber: event.taskNumber });
+            } else if (event.type === 'complete') {
+              setUploadSummary({
+                total: event.summary.total,
+                newCount: event.summary.total,
+                duplicateCount: 0,
+                pass: event.summary.pass,
+                fail: event.summary.fail,
+                pending: event.summary.pending,
+                youthPassRatio: 0,
+              });
+              await handleSelectProject(selectedProject);
+            } else if (event.type === 'error') {
+              alert(lang === 'ko' ? `오류: ${event.message}` : `Error: ${event.message}`);
+            }
+          } catch { /* 불완전한 JSON 라인 무시 */ }
+        }
+      }
+    } catch (error: any) {
+      alert(lang === 'ko' ? `처리 실패: ${error.message}` : `Failed: ${error.message}`);
+    } finally {
+      setIsFolderProcessing(false);
+      setFolderProgress(null);
+      if (folderInputRef.current) folderInputRef.current.value = '';
     }
   };
 
@@ -635,13 +718,55 @@ export default function Home() {
             <LogOut className="h-4 w-4" />
           </button>
 
-          <label className="inline-flex items-center justify-center rounded-2xl bg-primary px-6 py-2.5 text-sm font-black text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer">
+          {/* 엑셀만 업로드 */}
+          <label className="inline-flex items-center justify-center rounded-2xl border border-primary/40 bg-background/50 px-4 py-2.5 text-sm font-black text-primary shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer">
             {isProcessing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
             {isProcessing ? t.processing : t.uploadBtn}
-            <input type="file" className="hidden" accept=".xlsx" onChange={handleUpload} disabled={isProcessing} onClick={e => ((e.target as any).value = null)} />
+            <input type="file" className="hidden" accept=".xlsx" onChange={handleUpload} disabled={isProcessing || isFolderProcessing} onClick={e => ((e.target as any).value = null)} />
+          </label>
+
+          {/* dataset 폴더 업로드 (PDF 분석) */}
+          <label className="inline-flex items-center justify-center rounded-2xl bg-primary px-5 py-2.5 text-sm font-black text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer">
+            {isFolderProcessing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
+            {isFolderProcessing
+              ? (folderProgress && folderProgress.total > 0
+                  ? `${folderProgress.current}/${folderProgress.total}`
+                  : t.folderProcessing)
+              : t.folderUploadBtn}
+            <input
+              ref={folderInputRef}
+              type="file"
+              className="hidden"
+              multiple
+              onChange={handleFolderUpload}
+              disabled={isProcessing || isFolderProcessing}
+              // @ts-ignore - webkitdirectory는 표준 타입에 없지만 모던 브라우저 지원
+              webkitdirectory=""
+            />
           </label>
         </div>
       </div>
+
+      {/* 폴더 처리 진행 배너 */}
+      {isFolderProcessing && folderProgress && folderProgress.total > 0 && (
+        <div className="p-4 rounded-2xl bg-primary/5 border border-primary/20 flex items-center gap-4">
+          <Loader2 className="h-5 w-5 animate-spin text-primary shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-black text-primary">
+              {t.folderProgress(folderProgress.current, folderProgress.total, folderProgress.taskNumber)}
+            </p>
+            <div className="mt-2 h-1.5 rounded-full bg-primary/10 overflow-hidden">
+              <div
+                className="h-full bg-primary rounded-full transition-all duration-500"
+                style={{ width: `${Math.round((folderProgress.current / folderProgress.total) * 100)}%` }}
+              />
+            </div>
+          </div>
+          <span className="text-xs font-black text-primary/60 shrink-0">
+            {Math.round((folderProgress.current / folderProgress.total) * 100)}%
+          </span>
+        </div>
+      )}
 
       {/* Summary Metrics */}
       {selectedProject && (
