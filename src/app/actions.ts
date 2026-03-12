@@ -3,6 +3,7 @@
 import { parseExcel, ApplicantData } from '@/lib/excel-utils';
 import { simulateLLMCheck, LLMResult } from '@/lib/llm-engine';
 import { createClient } from '@/lib/supabase/server';
+import * as XLSX from 'xlsx';
 
 // ----------------------------------------------------------------
 // 유틸: 배치 처리 (Rate Limit 방지용 5건씩 순차 처리)
@@ -418,4 +419,120 @@ export async function runMigrationAction() {
   }
 
   return { success: true, message: 'Schema is up to date.' };
+}
+
+// ================================================================
+// 체크포인트 엑셀 다운로드
+// ================================================================
+
+export async function exportCheckpointsAction(projectId: string) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Unauthorized');
+
+  const { data: project } = await supabase
+    .from('screen_projects')
+    .select('title')
+    .eq('id', projectId)
+    .eq('user_id', user.id)
+    .single();
+
+  const { data: applicants, error } = await supabase
+    .from('screen_applicants')
+    .select('*')
+    .eq('project_id', projectId)
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: true });
+
+  if (error) throw error;
+  if (!applicants || applicants.length === 0) return { success: false, error: '데이터가 없습니다.' };
+
+  // ── llm_reasoning 파싱 헬퍼 ──────────────────────────────────
+  const parseReasoning = (raw: string) => {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.checkpoints) return parsed as { reasoning: string; checkpoints: Array<{ criterion: string; document: string; finding: string; result: string }> };
+    } catch { /* plain text */ }
+    return null;
+  };
+
+  // ── Sheet 1: 지원자 요약 ──────────────────────────────────────
+  const summaryRows = applicants.map((a: any) => {
+    const parsed = parseReasoning(a.llm_reasoning || '');
+    const failItems = parsed?.checkpoints?.filter(c => c.result === '부적합').map(c => c.criterion).join(', ') || '';
+    return {
+      '과제번호': a.task_number,
+      '성명': a.name,
+      '기업명': a.enterprise_name || '',
+      '창업유형': a.history_type || '',
+      '소재지': a.location_headquarters || '',
+      '거주지': a.residence || '',
+      '청년여부': a.is_youth ? '청년' : '비청년',
+      'AI판단': a.llm_status || '',
+      '최종상태': a.final_status || '',
+      '부적합 항목': failItems,
+      '종합판단근거': parsed?.reasoning || a.llm_reasoning || '',
+      '확정자': a.confirmed_by ? '확정됨' : '',
+      '확정의견': a.confirm_comment || '',
+    };
+  });
+
+  // ── Sheet 2: 체크포인트 상세 ──────────────────────────────────
+  const checkpointRows: object[] = [];
+  for (const a of applicants as any[]) {
+    const parsed = parseReasoning(a.llm_reasoning || '');
+    if (parsed?.checkpoints?.length) {
+      for (const cp of parsed.checkpoints) {
+        checkpointRows.push({
+          '과제번호': a.task_number,
+          '성명': a.name,
+          '기업명': a.enterprise_name || '',
+          'AI판단': a.llm_status || '',
+          '최종상태': a.final_status || '',
+          '심사항목': cp.criterion,
+          '확인서류': cp.document,
+          '확인내용': cp.finding,
+          '결과': cp.result,
+        });
+      }
+    } else {
+      // 체크포인트 없는 경우 (엑셀 기반 분석)
+      checkpointRows.push({
+        '과제번호': a.task_number,
+        '성명': a.name,
+        '기업명': a.enterprise_name || '',
+        'AI판단': a.llm_status || '',
+        '최종상태': a.final_status || '',
+        '심사항목': '(텍스트 분석)',
+        '확인서류': '-',
+        '확인내용': a.llm_reasoning || '',
+        '결과': a.llm_status === 'Pass' ? '적합' : a.llm_status === 'Fail' ? '부적합' : '확인불가',
+      });
+    }
+  }
+
+  // ── 워크북 생성 ───────────────────────────────────────────────
+  const wb = XLSX.utils.book_new();
+
+  const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+  // 컬럼 너비 설정
+  wsSummary['!cols'] = [
+    { wch: 12 }, { wch: 8 }, { wch: 20 }, { wch: 12 }, { wch: 20 },
+    { wch: 20 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 30 },
+    { wch: 50 }, { wch: 8 }, { wch: 30 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsSummary, '지원자 요약');
+
+  const wsCheckpoints = XLSX.utils.json_to_sheet(checkpointRows);
+  wsCheckpoints['!cols'] = [
+    { wch: 12 }, { wch: 8 }, { wch: 20 }, { wch: 8 }, { wch: 8 },
+    { wch: 15 }, { wch: 25 }, { wch: 50 }, { wch: 8 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsCheckpoints, '체크포인트 상세');
+
+  // ── base64로 반환 ─────────────────────────────────────────────
+  const buf = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+  const filename = `${project?.title || 'screening'}_체크포인트_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+  return { success: true, data: buf as string, filename };
 }

@@ -6,11 +6,13 @@ import {
   ChevronRight, X, Info, LogOut, LayoutDashboard, Rocket, ShieldCheck, Plus,
   FolderKanban, Trash2, Settings, Save, CheckCheck, XCircle, ClipboardCheck,
   FolderOpen,
+  Download,
 } from "lucide-react";
 import {
   createProjectAction, getProjectsAction, getProjectApplicantsAction,
   processExcelAction, deleteProjectAction, updateProjectSettingsAction,
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
+  exportCheckpointsAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
 import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
@@ -274,6 +276,9 @@ export default function Home() {
   // 수동 확정
   const [finalizeComment, setFinalizeComment] = useState("");
   const [isFinalizing, setIsFinalizing] = useState(false);
+
+  // 엑셀 다운로드
+  const [isExporting, setIsExporting] = useState(false);
 
   // dataset 폴더 업로드 (PDF 분석)
   const [isFolderProcessing, setIsFolderProcessing] = useState(false);
@@ -561,6 +566,27 @@ export default function Home() {
       setIsFolderProcessing(false);
       setFolderProgress(null);
       if (folderInputRef.current) folderInputRef.current.value = '';
+    }
+  };
+
+  // 체크포인트 엑셀 다운로드
+  const handleExport = async () => {
+    if (!selectedProject) return;
+    setIsExporting(true);
+    try {
+      const result = await exportCheckpointsAction(selectedProject.id);
+      if (!result.success || !result.data) {
+        alert(lang === 'ko' ? '다운로드 실패: 데이터가 없습니다.' : 'Export failed: no data.');
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${result.data}`;
+      link.download = result.filename!;
+      link.click();
+    } catch (error: any) {
+      alert(lang === 'ko' ? `다운로드 실패: ${error.message}` : `Export failed: ${error.message}`);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -903,9 +929,22 @@ export default function Home() {
             <div className="rounded-3xl border bg-card/30 backdrop-blur-md shadow-sm overflow-hidden flex flex-col min-h-[400px]">
               <div className="p-6 border-b flex items-center justify-between">
                 <h3 className="font-black text-lg uppercase tracking-tight">{t.table.title}</h3>
-                <span className="text-[10px] font-bold text-muted-foreground uppercase bg-accent px-2 py-1 rounded">
-                  {filteredApplicants.length} records
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold text-muted-foreground uppercase bg-accent px-2 py-1 rounded">
+                    {filteredApplicants.length} records
+                  </span>
+                  {data.length > 0 && (
+                    <button
+                      onClick={handleExport}
+                      disabled={isExporting}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border border-primary/30 text-primary hover:bg-primary hover:text-white transition-all disabled:opacity-50"
+                      title={lang === 'ko' ? '체크포인트 엑셀 다운로드' : 'Download Checkpoints Excel'}
+                    >
+                      {isExporting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                      {lang === 'ko' ? '엑셀 다운로드' : 'Export Excel'}
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="flex-1 overflow-auto max-h-[600px]">
                 {filteredApplicants.length > 0 ? (
