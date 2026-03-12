@@ -282,12 +282,6 @@ export default function Home() {
 
   const supabase = createClient();
 
-  // webkitdirectory는 React 표준 prop이 아니므로 ref로 직접 설정
-  useEffect(() => {
-    if (folderInputRef.current) {
-      folderInputRef.current.setAttribute('webkitdirectory', '');
-    }
-  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -773,7 +767,10 @@ export default function Home() {
                   : t.folderProcessing)
               : t.folderUploadBtn}
             <input
-              ref={folderInputRef}
+              ref={(el) => {
+                (folderInputRef as React.MutableRefObject<HTMLInputElement | null>).current = el;
+                if (el) el.setAttribute('webkitdirectory', '');
+              }}
               type="file"
               className="hidden"
               multiple
