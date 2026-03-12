@@ -12,6 +12,7 @@ import {
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
+import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 import { User } from "@supabase/supabase-js";
@@ -43,10 +44,12 @@ const translations = {
       deleteConfirmBtn: "영구 삭제",
       settings: "심사 기준 설정",
       settingsDesc: "AI가 지원자를 평가할 때 사용할 구체적인 기준과 모델을 설정합니다.",
-      criteriaLabel: "심사 기준 (Criteria)",
+      criteriaLabel: "심사 기준 ({criteria} 플레이스홀더에 주입)",
       criteriaPlaceholder: "예: 1. 업력 7년 이내\n2. 충청권 소재 기업...",
-      promptLabel: "커스텀 프롬프트 (Prompt / 선택사항)",
-      promptPlaceholder: "{criteria}와 지원자 데이터를 활용한 구체적인 지시사항을 입력하세요. 공란일 경우 기본 프롬프트가 사용됩니다.",
+      promptLabel: "AI 프롬프트 (실제 전송 내용)",
+      promptPlaceholder: "",
+      promptResetBtn: "기본값으로 초기화",
+      promptHint: "* {criteria} {type} {location} {residence} {birthDate} 플레이스홀더 사용 가능. {name} → 자동 마스킹.",
       modelLabel: "AI 모델 선택 (Model)",
       referenceDateLabel: "나이 계산 기준일 (공고일 / 선택사항)",
       referenceDatePlaceholder: "미입력 시 업로드 당일 기준",
@@ -138,10 +141,12 @@ const translations = {
       deleteConfirmBtn: "Delete Permanently",
       settings: "Project Settings",
       settingsDesc: "Configure the specific criteria and model the AI will use to evaluate applicants.",
-      criteriaLabel: "Screening Criteria",
+      criteriaLabel: "Screening Criteria (injected into {criteria})",
       criteriaPlaceholder: "e.g. 1. Within 7 years of operation\n2. Based in Chungcheong region...",
-      promptLabel: "Custom Prompt (Optional)",
-      promptPlaceholder: "Enter specific instructions using {criteria} and applicant data. Leave blank for default.",
+      promptLabel: "AI Prompt (actual content sent to LLM)",
+      promptPlaceholder: "",
+      promptResetBtn: "Reset to default",
+      promptHint: "* Placeholders: {criteria} {type} {location} {residence} {birthDate}. {name} → auto-masked.",
       modelLabel: "AI Model Selection",
       referenceDateLabel: "Age Reference Date (Announcement Date / Optional)",
       referenceDatePlaceholder: "Defaults to upload date if empty",
@@ -302,7 +307,7 @@ export default function Home() {
   const handleSelectProject = async (project: any) => {
     setSelectedProject(project);
     setProjectCriteria(project.criteria || "");
-    setProjectPrompt(project.prompt || "");
+    setProjectPrompt(project.prompt || DEFAULT_PROMPT_TEMPLATE);
     setProjectModel(project.model || "gpt-4o");
     setProjectReferenceDate(project.reference_date || "");
     setIsProjectLoading(true);
@@ -371,14 +376,16 @@ export default function Home() {
     if (!selectedProject) return;
     setIsUpdatingCriteria(true);
     try {
+      // 기본값과 동일한 프롬프트는 undefined로 저장 (DB에 빈값으로 클리어)
+      const promptToSave = projectPrompt === DEFAULT_PROMPT_TEMPLATE ? undefined : (projectPrompt || undefined);
       const res = await updateProjectSettingsAction(selectedProject.id, {
         criteria: projectCriteria,
-        prompt: projectPrompt,
+        prompt: promptToSave,
         model: projectModel,
         reference_date: projectReferenceDate || undefined,
       });
       if (res.success) {
-        const updated = { ...selectedProject, criteria: projectCriteria, prompt: projectPrompt, model: projectModel, reference_date: projectReferenceDate };
+        const updated = { ...selectedProject, criteria: projectCriteria, prompt: promptToSave, model: projectModel, reference_date: projectReferenceDate };
         setSelectedProject(updated);
         setProjects(projects.map(p => p.id === selectedProject.id ? updated : p));
 
@@ -1156,17 +1163,25 @@ export default function Home() {
                 />
               </div>
 
-              {/* Custom Prompt */}
+              {/* AI Prompt */}
               <div className="space-y-2.5">
-                <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground pl-1">{t.projects.promptLabel}</label>
+                <div className="flex items-center justify-between pl-1">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t.projects.promptLabel}</label>
+                  <button
+                    type="button"
+                    onClick={() => setProjectPrompt(DEFAULT_PROMPT_TEMPLATE)}
+                    className="text-[9px] font-bold text-primary hover:underline"
+                  >
+                    {t.projects.promptResetBtn}
+                  </button>
+                </div>
                 <textarea
-                  className="w-full h-40 px-5 py-4 rounded-2xl border bg-background focus:ring-4 focus:ring-primary/10 outline-none transition-all font-medium text-sm leading-relaxed resize-none"
-                  placeholder={t.projects.promptPlaceholder}
+                  className="w-full h-72 px-5 py-4 rounded-2xl border bg-background focus:ring-4 focus:ring-primary/10 outline-none transition-all font-mono text-xs leading-relaxed resize-y"
                   value={projectPrompt}
                   onChange={e => setProjectPrompt(e.target.value)}
                 />
                 <p className="text-[9px] text-muted-foreground px-1 italic">
-                  * Variables: {'{criteria}, {type}, {location}, {residence}, {birthDate}'} ({'{name}'} → 지원자로 자동 마스킹)
+                  {t.projects.promptHint}
                 </p>
               </div>
             </div>
