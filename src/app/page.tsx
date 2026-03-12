@@ -282,6 +282,13 @@ export default function Home() {
 
   const supabase = createClient();
 
+  // webkitdirectory는 React 표준 prop이 아니므로 ref로 직접 설정
+  useEffect(() => {
+    if (folderInputRef.current) {
+      folderInputRef.current.setAttribute('webkitdirectory', '');
+    }
+  }, []);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -471,57 +478,89 @@ export default function Home() {
       return;
     }
 
-    setIsFolderProcessing(true);
-    setFolderProgress({ current: 0, total: 0, taskNumber: '' });
+    // ── 클라이언트에서 파일을 과제번호별로 그룹화 ──────────────────
+    let excelFile: File | null = null;
+    const taskGroups = new Map<string, File[]>();
 
-    const formData = new FormData();
     for (const file of files) {
-      // webkitRelativePath를 파일명으로 사용해 서버에서 폴더 구조 복원
       const path = (file as any).webkitRelativePath || file.name;
-      formData.append('files', file, path);
+      const parts = path.replace(/\\/g, '/').split('/');
+      const basename = parts[parts.length - 1];
+
+      if (basename.endsWith('.xlsx')) {
+        excelFile = file;
+      } else if (basename.endsWith('.pdf') && parts.length >= 2) {
+        const folderName = parts[parts.length - 2];
+        const taskNumber = folderName.replace(/_.*$/, '');
+        if (!taskGroups.has(taskNumber)) taskGroups.set(taskNumber, []);
+        taskGroups.get(taskNumber)!.push(file);
+      }
     }
 
+    const taskNumbers = Array.from(taskGroups.keys());
+    if (taskNumbers.length === 0) {
+      alert(lang === 'ko' ? "PDF 파일이 있는 과제번호 폴더를 찾을 수 없습니다." : "No task folders with PDFs found.");
+      return;
+    }
+
+    setIsFolderProcessing(true);
+    setFolderProgress({ current: 0, total: taskNumbers.length, taskNumber: '' });
+
+    let pass = 0, fail = 0, pending = 0;
+
     try {
-      const response = await fetch(`/api/process-dataset?projectId=${selectedProject.id}`, {
-        method: 'POST',
-        body: formData,
-      });
+      // ── 과제번호 1개씩 순서대로 API 호출 (요청당 ~5MB) ───────────
+      for (let i = 0; i < taskNumbers.length; i++) {
+        const taskNumber = taskNumbers[i];
+        setFolderProgress({ current: i + 1, total: taskNumbers.length, taskNumber });
 
-      if (!response.ok) throw new Error(`서버 오류: ${response.statusText}`);
-      if (!response.body) throw new Error('응답 스트림이 없습니다.');
+        const formData = new FormData();
+        // Excel 파일은 매번 포함 (서버에서 메타데이터 파싱)
+        if (excelFile) {
+          const excelPath = (excelFile as any).webkitRelativePath || excelFile.name;
+          formData.append('files', excelFile, excelPath);
+        }
+        // 이번 과제번호의 PDF만 포함
+        for (const pdfFile of taskGroups.get(taskNumber)!) {
+          const pdfPath = (pdfFile as any).webkitRelativePath || pdfFile.name;
+          formData.append('files', pdfFile, pdfPath);
+        }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+        try {
+          const res = await fetch(`/api/process-dataset?projectId=${selectedProject.id}`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const lines = decoder.decode(value).split('\n').filter(Boolean);
-        for (const line of lines) {
-          try {
-            const event = JSON.parse(line);
-            if (event.type === 'start') {
-              setFolderProgress({ current: 0, total: event.total, taskNumber: '' });
-            } else if (event.type === 'progress') {
-              setFolderProgress({ current: event.current, total: event.total, taskNumber: event.taskNumber });
-            } else if (event.type === 'complete') {
-              setUploadSummary({
-                total: event.summary.total,
-                newCount: event.summary.total,
-                duplicateCount: 0,
-                pass: event.summary.pass,
-                fail: event.summary.fail,
-                pending: event.summary.pending,
-                youthPassRatio: 0,
-              });
-              await handleSelectProject(selectedProject);
-            } else if (event.type === 'error') {
-              alert(lang === 'ko' ? `오류: ${event.message}` : `Error: ${event.message}`);
-            }
-          } catch { /* 불완전한 JSON 라인 무시 */ }
+          // NDJSON 스트림에서 complete 이벤트만 추출
+          const text = await res.text();
+          for (const line of text.split('\n').filter(Boolean)) {
+            try {
+              const ev = JSON.parse(line);
+              if (ev.type === 'complete') {
+                pass += ev.summary.pass;
+                fail += ev.summary.fail;
+                pending += ev.summary.pending;
+              }
+            } catch { /* skip */ }
+          }
+        } catch (err: any) {
+          console.error(`[${taskNumber}] 오류:`, err);
+          pending++;
         }
       }
+
+      setUploadSummary({
+        total: taskNumbers.length,
+        newCount: taskNumbers.length,
+        duplicateCount: 0,
+        pass,
+        fail,
+        pending,
+        youthPassRatio: 0,
+      });
+      await handleSelectProject(selectedProject);
     } catch (error: any) {
       alert(lang === 'ko' ? `처리 실패: ${error.message}` : `Failed: ${error.message}`);
     } finally {
@@ -740,8 +779,6 @@ export default function Home() {
               multiple
               onChange={handleFolderUpload}
               disabled={isProcessing || isFolderProcessing}
-              // @ts-ignore - webkitdirectory는 표준 타입에 없지만 모던 브라우저 지원
-              webkitdirectory=""
             />
           </label>
         </div>
