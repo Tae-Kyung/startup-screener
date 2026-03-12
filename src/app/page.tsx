@@ -1049,31 +1049,92 @@ export default function Home() {
               </div>
 
               {/* AI Reasoning Tab */}
-              {modalTab === 'reasoning' && (
-                <div className="space-y-6 animate-in slide-in-from-left-4 duration-300">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="p-4 rounded-2xl bg-accent/20 border text-center">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">AI (LLM)</p>
-                      {statusBadge(selectedApplicant.llmStatus, 'llm')}
+              {modalTab === 'reasoning' && (() => {
+                // llm_reasoning이 JSON이면 체크포인트 보고서, 아니면 텍스트 표시
+                let reasoningText = selectedApplicant.llmReasoning || '';
+                let checkpoints: Array<{ criterion: string; document: string; finding: string; result: string }> | null = null;
+                try {
+                  const parsed = JSON.parse(reasoningText);
+                  if (parsed?.checkpoints) {
+                    reasoningText = parsed.reasoning || '';
+                    checkpoints = parsed.checkpoints;
+                  }
+                } catch { /* plain text */ }
+
+                const resultColor = (r: string) =>
+                  r === '적합' ? 'bg-emerald-500/10 text-emerald-600'
+                  : r === '부적합' ? 'bg-rose-500/10 text-rose-600'
+                  : 'bg-orange-500/10 text-orange-600';
+
+                return (
+                  <div className="space-y-5 animate-in slide-in-from-left-4 duration-300">
+                    {/* 상태 뱃지 */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-4 rounded-2xl bg-accent/20 border text-center">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">AI (LLM)</p>
+                        {statusBadge(selectedApplicant.llmStatus, 'llm')}
+                      </div>
+                      <div className="p-4 rounded-2xl bg-accent/20 border text-center">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">Final</p>
+                        {statusBadge(selectedApplicant.finalStatus, 'final')}
+                      </div>
                     </div>
-                    <div className="p-4 rounded-2xl bg-accent/20 border text-center">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">Final</p>
-                      {statusBadge(selectedApplicant.finalStatus, 'final')}
+
+                    {/* 체크포인트 보고서 */}
+                    {checkpoints && checkpoints.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <div className="h-5 w-[3px] bg-primary rounded-full" />
+                          <h4 className="text-xs font-black uppercase tracking-widest text-muted-foreground">
+                            {lang === 'ko' ? '서류 검토 체크포인트' : 'Document Checkpoints'}
+                          </h4>
+                        </div>
+                        <div className="rounded-2xl border overflow-hidden">
+                          <table className="w-full text-xs">
+                            <thead className="bg-accent/40 border-b">
+                              <tr className="text-[9px] font-black uppercase tracking-wider text-muted-foreground">
+                                <th className="px-3 py-2.5 text-left w-[22%]">{lang === 'ko' ? '심사 항목' : 'Item'}</th>
+                                <th className="px-3 py-2.5 text-left w-[23%]">{lang === 'ko' ? '확인 서류' : 'Document'}</th>
+                                <th className="px-3 py-2.5 text-left">{lang === 'ko' ? '확인 내용' : 'Finding'}</th>
+                                <th className="px-3 py-2.5 text-center w-[14%]">{lang === 'ko' ? '결과' : 'Result'}</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-muted/10">
+                              {checkpoints.map((cp, idx) => (
+                                <tr key={idx} className="hover:bg-accent/10 transition-colors">
+                                  <td className="px-3 py-2.5 font-bold text-foreground">{cp.criterion}</td>
+                                  <td className="px-3 py-2.5 text-muted-foreground">{cp.document}</td>
+                                  <td className="px-3 py-2.5 text-foreground/80">{cp.finding}</td>
+                                  <td className="px-3 py-2.5 text-center">
+                                    <span className={`px-2 py-0.5 rounded text-[9px] font-black ${resultColor(cp.result)}`}>
+                                      {cp.result}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 종합 의견 */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <div className="h-5 w-[3px] bg-primary rounded-full" />
+                        <h4 className="text-xs font-black uppercase tracking-widest text-muted-foreground">
+                          {lang === 'ko' ? '종합 판단 근거' : 'Summary'}
+                        </h4>
+                      </div>
+                      <div className="p-5 rounded-2xl bg-accent/20 border-l-4 border-primary">
+                        <p className="text-sm font-medium leading-relaxed text-foreground/90 italic">
+                          "{reasoningText || (lang === 'ko' ? '분석 데이터가 없습니다.' : 'No reasoning available.')}"
+                        </p>
+                      </div>
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-5 w-[3px] bg-primary rounded-full" />
-                      <h4 className="text-xs font-black uppercase tracking-widest text-muted-foreground">{t.details.reasoningTitle}</h4>
-                    </div>
-                    <div className="p-6 rounded-3xl bg-accent/20 border-l-4 border-primary italic">
-                      <p className="text-sm font-medium leading-relaxed text-foreground/90">
-                        "{selectedApplicant.llmReasoning || (lang === 'ko' ? '상세 분석 데이터가 없습니다.' : 'No detailed reasoning available.')}"
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Finalize Tab */}
               {modalTab === 'finalize' && (

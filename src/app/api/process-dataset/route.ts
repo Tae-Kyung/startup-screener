@@ -109,13 +109,18 @@ export async function POST(request: NextRequest) {
         else if (finalStatus === 'Rejected') fail++;
         else pending++;
 
+        // checkpoints가 있으면 JSON으로 직렬화해 llm_reasoning에 저장 (스키마 변경 불필요)
+        const llmReasoningToStore = llmResult.checkpoints
+          ? JSON.stringify({ reasoning: llmResult.reasoning, checkpoints: llmResult.checkpoints })
+          : llmResult.reasoning;
+
         const existingId = existingMap.get(taskNumber);
         if (existingId) {
           await supabase
             .from('screen_applicants')
             .update({
               llm_status: llmResult.status,
-              llm_reasoning: llmResult.reasoning,
+              llm_reasoning: llmReasoningToStore,
               final_status: finalStatus,
               updated_at: new Date().toISOString(),
             })
@@ -136,7 +141,7 @@ export async function POST(request: NextRequest) {
             is_regional: excelData?.isRegional ?? null,
             rule_status: null,
             llm_status: llmResult.status,
-            llm_reasoning: llmResult.reasoning,
+            llm_reasoning: llmReasoningToStore,
             final_status: finalStatus,
             raw_data: excelData?.raw ?? null,
           });

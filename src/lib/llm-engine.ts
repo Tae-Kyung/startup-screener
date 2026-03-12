@@ -2,9 +2,17 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { DEFAULT_CRITERIA, DEFAULT_PROMPT_TEMPLATE } from './prompt-defaults';
 
+export interface CheckpointItem {
+  criterion: string;  // 심사 항목 (예: 업력 확인, 소재지 확인)
+  document: string;   // 확인한 서류명 (예: 참여신청서 2p, 사업계획서)
+  finding: string;    // 서류에서 확인된 구체적 내용
+  result: '적합' | '부적합' | '확인불가';
+}
+
 export interface LLMResult {
   status: 'Pass' | 'Fail' | 'Pending';
   reasoning: string;
+  checkpoints?: CheckpointItem[];
 }
 
 const openai = new OpenAI({
@@ -121,8 +129,19 @@ ${criteriaText}
 - Fail: 서류에서 명확한 부적격 사유 확인
 - Pending: 서류가 불명확하거나 추가 확인이 필요한 경우
 
-[출력 형식] 반드시 아래 JSON만 출력하세요:
-{"status": "Pass | Fail | Pending", "reasoning": "판단 근거 (한국어, 서류에서 확인된 구체적 내용 포함)"}`;
+[출력 형식] 반드시 아래 JSON만 출력하세요 (다른 텍스트 금지):
+{
+  "status": "Pass | Fail | Pending",
+  "reasoning": "종합 판단 근거 (2~3문장, 한국어)",
+  "checkpoints": [
+    {
+      "criterion": "심사 항목명 (예: 업력, 소재지, 청년 여부 등)",
+      "document": "확인한 서류명과 위치 (예: 참여신청서 3페이지, 사업계획서 표지)",
+      "finding": "서류에서 직접 확인한 구체적 내용 (날짜, 주소, 수치 등)",
+      "result": "적합 | 부적합 | 확인불가"
+    }
+  ]
+}`;
 
   const contentParts: Array<{ type: string; [key: string]: unknown }> = [
     { type: 'input_text', text: prompt },
@@ -144,7 +163,8 @@ ${criteriaText}
     });
 
     const text: string = response.output_text || '';
-    const jsonMatch = text.match(/\{[\s\S]*?\}/);
+    // 중첩 JSON (checkpoints 배열 포함)을 올바르게 추출하기 위해 greedy match
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('JSON 응답을 파싱할 수 없습니다.');
     return JSON.parse(jsonMatch[0]) as LLMResult;
   } catch (error) {
