@@ -502,6 +502,12 @@ export default function Home() {
       return;
     }
 
+    const pdfCount = Array.from(taskGroups.values()).reduce((sum, arr) => sum + arr.length, 0);
+    const confirmMsg = lang === 'ko'
+      ? `${taskNumbers.length}개 과제, PDF ${pdfCount}개를 AI 심사하시겠습니까?`
+      : `Start AI screening for ${taskNumbers.length} tasks (${pdfCount} PDFs)?`;
+    if (!confirm(confirmMsg)) return;
+
     setIsFolderProcessing(true);
     setFolderProgress({ current: 0, total: taskNumbers.length, taskNumber: '' });
 
