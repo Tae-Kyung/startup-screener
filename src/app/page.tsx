@@ -532,8 +532,11 @@ export default function Home() {
         const excelBase64 = excelFile ? await toBase64(excelFile) : null;
 
         const pdfFiles = taskGroups.get(taskNumber)!;
-        const pdfPaths = await Promise.all(pdfFiles.map(async (file) => {
-          const storagePath = `${user!.id}/${taskNumber}/${Date.now()}_${file.name}`;
+        const pdfPaths = await Promise.all(pdfFiles.map(async (file, idx) => {
+          // 한글·공백 등 특수문자를 제거한 안전한 스토리지 경로 사용
+          const ext = file.name.lastIndexOf('.') >= 0 ? file.name.slice(file.name.lastIndexOf('.')) : '.pdf';
+          const safeName = `${Date.now()}_${idx}${ext}`;
+          const storagePath = `${user!.id}/${taskNumber}/${safeName}`;
           const { error } = await supabase.storage
             .from('pdf-temp')
             .upload(storagePath, file, { upsert: true });
