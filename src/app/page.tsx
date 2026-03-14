@@ -512,20 +512,19 @@ export default function Home() {
     setFolderProgress({ current: 0, total: taskNumbers.length, taskNumber: '' });
 
     let pass = 0, fail = 0, pending = 0;
+    let completed = 0;
 
     try {
-      // ── 과제번호 1개씩 순서대로 API 호출 (요청당 ~5MB) ───────────
-      for (let i = 0; i < taskNumbers.length; i++) {
-        const taskNumber = taskNumbers[i];
-        setFolderProgress({ current: i + 1, total: taskNumbers.length, taskNumber });
+      // ── 최대 5개 동시 병렬 처리 (worker pool) ────────────────────
+      const CONCURRENCY = 5;
+      const queue = [...taskNumbers];
 
+      const processTask = async (taskNumber: string) => {
         const formData = new FormData();
-        // Excel 파일은 매번 포함 (서버에서 메타데이터 파싱)
         if (excelFile) {
           const excelPath = (excelFile as any).webkitRelativePath || excelFile.name;
           formData.append('files', excelFile, excelPath);
         }
-        // 이번 과제번호의 PDF만 포함
         for (const pdfFile of taskGroups.get(taskNumber)!) {
           const pdfPath = (pdfFile as any).webkitRelativePath || pdfFile.name;
           formData.append('files', pdfFile, pdfPath);
@@ -538,7 +537,6 @@ export default function Home() {
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-          // NDJSON 스트림에서 complete 이벤트만 추출
           const text = await res.text();
           for (const line of text.split('\n').filter(Boolean)) {
             try {
@@ -554,7 +552,19 @@ export default function Home() {
           console.error(`[${taskNumber}] 오류:`, err);
           pending++;
         }
-      }
+
+        completed++;
+        setFolderProgress({ current: completed, total: taskNumbers.length, taskNumber });
+      };
+
+      const workers = Array.from({ length: Math.min(CONCURRENCY, taskNumbers.length) }, async () => {
+        while (queue.length > 0) {
+          const taskNumber = queue.shift()!;
+          await processTask(taskNumber);
+        }
+      });
+
+      await Promise.allSettled(workers);
 
       setUploadSummary({
         total: taskNumbers.length,
