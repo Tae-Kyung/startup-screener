@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
 
         const existingId = existingMap.get(tn);
         if (existingId) {
-          await supabase
+          const { error: updateErr } = await supabase
             .from('screen_applicants')
             .update({
               llm_status: llmResult.status,
@@ -105,8 +105,9 @@ export async function POST(request: NextRequest) {
               updated_at: new Date().toISOString(),
             })
             .eq('id', existingId);
+          if (updateErr) throw updateErr;
         } else {
-          await supabase.from('screen_applicants').insert({
+          const { error: insertErr } = await supabase.from('screen_applicants').insert({
             project_id: projectId,
             user_id: user.id,
             task_number: tn,
@@ -125,13 +126,14 @@ export async function POST(request: NextRequest) {
             final_status: finalStatus,
             raw_data: excelData?.raw ?? null,
           });
+          if (insertErr) throw insertErr;
         }
       } catch (err) {
         console.error(`[${tn}] 처리 오류:`, err);
         pending++;
         try {
           const existingId = existingMap.get(tn);
-          const errMsg = err instanceof Error ? err.message : '처리 중 오류 발생';
+          const errMsg = err instanceof Error ? err.message : String(err);
           if (existingId) {
             await supabase.from('screen_applicants').update({
               llm_status: 'Pending',
