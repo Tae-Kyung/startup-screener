@@ -896,6 +896,11 @@ export async function processDatasetAction(payload: {
       return { name, fileId: uploaded.id };
     }));
 
+    // OpenAI 업로드 완료 즉시 Supabase 파일 삭제 (타임아웃 대비)
+    if (pdfPaths.length > 0) {
+      await adminSupabase.storage.from('pdf-temp').remove(pdfPaths.map(p => p.storagePath));
+    }
+
     // 2. LLM 분석
     const llmResult = await analyzePDFsWithOpenAI(
       pdfsForAnalysis,
@@ -1016,12 +1021,10 @@ export async function processDatasetAction(payload: {
     } catch { /* DB fallback 실패 무시 */ }
   } finally {
     // 3. 분석 완료 후 즉시 삭제 (성공/실패 무관)
-    await Promise.allSettled([
-      ...openaiFileIds.map(id => openaiClient.files.delete(id)),
-      pdfPaths.length > 0
-        ? adminSupabase.storage.from('pdf-temp').remove(pdfPaths.map(p => p.storagePath))
-        : Promise.resolve(),
-    ]);
+    // OpenAI 파일 삭제 (Supabase는 업로드 직후 이미 삭제됨)
+    await Promise.allSettled(
+      openaiFileIds.map(id => openaiClient.files.delete(id))
+    );
   }
 
   return { pass, fail, pending };
