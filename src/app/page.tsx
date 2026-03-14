@@ -519,21 +519,33 @@ export default function Home() {
       const CONCURRENCY = 5;
       const queue = [...taskNumbers];
 
+      const toBase64 = (file: File): Promise<string> =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve((reader.result as string).split(',')[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
       const processTask = async (taskNumber: string) => {
-        const formData = new FormData();
-        if (excelFile) {
-          const excelPath = (excelFile as any).webkitRelativePath || excelFile.name;
-          formData.append('files', excelFile, excelPath);
-        }
-        for (const pdfFile of taskGroups.get(taskNumber)!) {
-          const pdfPath = (pdfFile as any).webkitRelativePath || pdfFile.name;
-          formData.append('files', pdfFile, pdfPath);
-        }
+        const [excelBase64, ...pdfEntries] = await Promise.all([
+          excelFile ? toBase64(excelFile) : Promise.resolve(null),
+          ...taskGroups.get(taskNumber)!.map(async (f) => ({
+            name: f.name,
+            base64: await toBase64(f),
+          })),
+        ]);
 
         try {
           const res = await fetch(`/api/process-dataset?projectId=${selectedProject.id}`, {
             method: 'POST',
-            body: formData,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              taskNumber,
+              excelBase64,
+              excelName: excelFile?.name ?? null,
+              pdfs: pdfEntries,
+            }),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
 

@@ -23,32 +23,18 @@ export async function POST(request: NextRequest) {
       .eq('user_id', user.id)
       .single();
 
-    // ── FormData 파싱 ──────────────────────────────────────────────
-    const formData = await request.formData();
-    const files = formData.getAll('files') as File[];
-
-    // ── 파일 분류 ──────────────────────────────────────────────────
-    let excelFile: File | null = null;
-    const pdfsByTask = new Map<string, Array<{ name: string; file: File }>>();
-
-    for (const file of files) {
-      const parts = file.name.replace(/\\/g, '/').split('/');
-      const basename = parts[parts.length - 1];
-
-      if (basename.endsWith('.xlsx')) {
-        excelFile = file;
-      } else if (basename.endsWith('.pdf') && parts.length >= 2) {
-        const folderName = parts[parts.length - 2];
-        const taskNumber = folderName.replace(/_.*$/, '');
-        if (!pdfsByTask.has(taskNumber)) pdfsByTask.set(taskNumber, []);
-        pdfsByTask.get(taskNumber)!.push({ name: basename, file });
-      }
-    }
+    // ── JSON 파싱 (FormData 대비 body 크기 제한 없음) ──────────────
+    const { taskNumber, excelBase64, excelName, pdfs } = await request.json() as {
+      taskNumber: string;
+      excelBase64: string | null;
+      excelName: string | null;
+      pdfs: Array<{ name: string; base64: string }>;
+    };
 
     // ── Excel 파싱 ─────────────────────────────────────────────────
     const excelMap = new Map<string, ReturnType<typeof parseExcel>[number]>();
-    if (excelFile) {
-      const buf = Buffer.from(await excelFile.arrayBuffer());
+    if (excelBase64) {
+      const buf = Buffer.from(excelBase64, 'base64');
       const refDate = project?.reference_date ? new Date(project.reference_date) : undefined;
       for (const app of parseExcel(buf, refDate)) {
         excelMap.set(app.taskNumber, app);
@@ -56,7 +42,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 기존 DB 레코드 ─────────────────────────────────────────────
-    const taskNumbers = Array.from(pdfsByTask.keys());
+    const taskNumbers = [taskNumber];
     const { data: existing } = await supabase
       .from('screen_applicants')
       .select('task_number, id')
@@ -75,22 +61,17 @@ export async function POST(request: NextRequest) {
     };
 
     // ── 과제번호별 처리 ────────────────────────────────────────────
-    for (const taskNumber of taskNumbers) {
-      const pdfEntries = pdfsByTask.get(taskNumber)!;
-      const excelData = excelMap.get(taskNumber) ?? null;
+    for (const tn of taskNumbers) {
+      const excelData = excelMap.get(tn) ?? null;
 
       try {
-        const pdfFiles = await Promise.all(
-          pdfEntries.map(async ({ name, file }) => ({
-            name,
-            base64: Buffer.from(await file.arrayBuffer()).toString('base64'),
-          }))
-        );
+        // base64가 이미 클라이언트에서 변환되어 전달됨
+        const pdfFiles = pdfs.map(({ name, base64 }) => ({ name, base64 }));
 
         const llmResult = await analyzePDFsWithOpenAI(
           pdfFiles,
           {
-            taskNumber,
+            taskNumber: tn,
             historyType: excelData?.historyType,
             locationHeadquarters: excelData?.locationHeadquarters,
             residence: excelData?.residence,
@@ -109,12 +90,11 @@ export async function POST(request: NextRequest) {
         else if (finalStatus === 'Rejected') fail++;
         else pending++;
 
-        // checkpoints가 있으면 JSON으로 직렬화해 llm_reasoning에 저장 (스키마 변경 불필요)
         const llmReasoningToStore = llmResult.checkpoints
           ? JSON.stringify({ reasoning: llmResult.reasoning, checkpoints: llmResult.checkpoints })
           : llmResult.reasoning;
 
-        const existingId = existingMap.get(taskNumber);
+        const existingId = existingMap.get(tn);
         if (existingId) {
           await supabase
             .from('screen_applicants')
@@ -129,8 +109,8 @@ export async function POST(request: NextRequest) {
           await supabase.from('screen_applicants').insert({
             project_id: projectId,
             user_id: user.id,
-            task_number: taskNumber,
-            name: excelData?.name || `지원자_${taskNumber}`,
+            task_number: tn,
+            name: excelData?.name || `지원자_${tn}`,
             birth_date: sanitizeBD(excelData?.birthDate),
             enterprise_name: excelData?.enterpriseName ?? null,
             history_type: excelData?.historyType ?? null,
@@ -147,11 +127,10 @@ export async function POST(request: NextRequest) {
           });
         }
       } catch (err) {
-        console.error(`[${taskNumber}] 처리 오류:`, err);
+        console.error(`[${tn}] 처리 오류:`, err);
         pending++;
-        // 오류가 발생해도 Pending 상태로 DB에 저장 (누락 방지)
         try {
-          const existingId = existingMap.get(taskNumber);
+          const existingId = existingMap.get(tn);
           const errMsg = err instanceof Error ? err.message : '처리 중 오류 발생';
           if (existingId) {
             await supabase.from('screen_applicants').update({
@@ -161,12 +140,11 @@ export async function POST(request: NextRequest) {
               updated_at: new Date().toISOString(),
             }).eq('id', existingId);
           } else {
-            const excelData = excelMap.get(taskNumber) ?? null;
             await supabase.from('screen_applicants').insert({
               project_id: projectId,
               user_id: user.id,
-              task_number: taskNumber,
-              name: excelData?.name || `지원자_${taskNumber}`,
+              task_number: tn,
+              name: excelData?.name || `지원자_${tn}`,
               birth_date: sanitizeBD(excelData?.birthDate),
               enterprise_name: excelData?.enterpriseName ?? null,
               history_type: excelData?.historyType ?? null,
@@ -183,7 +161,7 @@ export async function POST(request: NextRequest) {
             });
           }
         } catch (dbErr) {
-          console.error(`[${taskNumber}] DB 저장 오류:`, dbErr);
+          console.error(`[${tn}] DB 저장 오류:`, dbErr);
         }
       }
     }
