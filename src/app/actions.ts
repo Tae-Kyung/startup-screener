@@ -663,6 +663,40 @@ export async function exportCheckpointsAction(projectId: string) {
 }
 
 // ----------------------------------------------------------------
+// Supabase pdf-temp 버킷에서 해당 유저의 잔여 파일 전체 삭제
+// ----------------------------------------------------------------
+export async function cleanupStorageAction(): Promise<void> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return;
+
+  const adminSupabase = createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+  // 유저 폴더 아래 과제번호 폴더 목록
+  const { data: taskFolders } = await adminSupabase.storage
+    .from('pdf-temp')
+    .list(user.id, { limit: 200 });
+
+  if (!taskFolders?.length) return;
+
+  for (const tf of taskFolders) {
+    const prefix = `${user.id}/${tf.name}`;
+    const { data: files } = await adminSupabase.storage
+      .from('pdf-temp')
+      .list(prefix, { limit: 200 });
+
+    if (files?.length) {
+      await adminSupabase.storage
+        .from('pdf-temp')
+        .remove(files.map(f => `${prefix}/${f.name}`));
+    }
+  }
+}
+
+// ----------------------------------------------------------------
 // Excel 데이터로 기존 레코드의 빈 필드 일괄 업데이트
 // ----------------------------------------------------------------
 export async function syncExcelDataAction(

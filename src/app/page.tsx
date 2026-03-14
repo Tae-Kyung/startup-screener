@@ -13,7 +13,7 @@ import {
   processExcelAction, deleteProjectAction, updateProjectSettingsAction,
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
   exportCheckpointsAction, processDatasetAction, getSignedUploadUrlsAction,
-  getSkippedTasksAction, syncExcelDataAction,
+  getSkippedTasksAction, syncExcelDataAction, cleanupStorageAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
 import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
@@ -524,6 +524,9 @@ export default function Home() {
       });
 
     try {
+      // ── 이전 처리 실패로 남은 잔여 파일 정리 ─────────────────────
+      await cleanupStorageAction().catch(() => {});
+
       // ── Excel 필드 기존 레코드 동기화 (빈 값 채우기) ──────────────
       if (excelFile) {
         const excelBase64 = await toBase64(excelFile);
