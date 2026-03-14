@@ -1,4 +1,7 @@
 import type { Metadata } from "next";
+
+// Server Actions (PDF 분석)의 Vercel 함수 타임아웃을 300초로 설정
+export const maxDuration = 300;
 import { Inter } from "next/font/google";
 import "./globals.css";
 

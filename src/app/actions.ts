@@ -664,7 +664,10 @@ export async function getSignedUploadUrlsAction(
     const { data, error } = await adminSupabase.storage
       .from('pdf-temp')
       .createSignedUploadUrl(path);
-    if (error || !data) throw new Error(`업로드 URL 생성 실패 (${path}): ${error?.message}`);
+    if (error || !data) {
+      console.error('[getSignedUploadUrlsAction] URL 생성 실패:', path, error);
+      throw new Error(`업로드 URL 생성 실패: ${error?.message}`);
+    }
     return { path, signedUrl: data.signedUrl, token: data.token };
   }));
 
@@ -746,10 +749,16 @@ export async function processDatasetAction(payload: {
       const { data: urlData, error: urlError } = await adminSupabase.storage
         .from('pdf-temp')
         .createSignedUrl(storagePath, 120);
-      if (urlError || !urlData?.signedUrl) throw new Error(`Signed URL 생성 실패: ${name}`);
+      if (urlError || !urlData?.signedUrl) {
+        console.error(`[processDatasetAction][${taskNumber}] Signed URL 생성 실패:`, storagePath, urlError);
+        throw new Error(`Signed URL 생성 실패: ${name}`);
+      }
 
       const res = await fetch(urlData.signedUrl);
-      if (!res.ok) throw new Error(`PDF 다운로드 실패: ${name}`);
+      if (!res.ok) {
+        console.error(`[processDatasetAction][${taskNumber}] PDF 다운로드 실패:`, name, res.status);
+        throw new Error(`PDF 다운로드 실패: ${name} (HTTP ${res.status})`);
+      }
       const buffer = await res.arrayBuffer();
 
       const uploaded = await openaiClient.files.create({
@@ -820,6 +829,7 @@ export async function processDatasetAction(payload: {
   } catch (err) {
     pending++;
     const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[processDatasetAction][${taskNumber}] 처리 실패:`, err);
     try {
       if (existingId) {
         await supabase.from('screen_applicants').update({
