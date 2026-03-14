@@ -1,7 +1,7 @@
 'use server';
 
 import { parseExcel, ApplicantData } from '@/lib/excel-utils';
-import { simulateLLMCheck, LLMResult } from '@/lib/llm-engine';
+import { simulateLLMCheck, LLMResult, analyzePDFsWithOpenAI } from '@/lib/llm-engine';
 import { createClient } from '@/lib/supabase/server';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
@@ -641,4 +641,150 @@ export async function exportCheckpointsAction(projectId: string) {
   const filename = `${project?.title || 'screening'}_심사결과_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
   return { success: true, data: base64 as string, filename };
+}
+
+// ----------------------------------------------------------------
+// PDF 서류 AI 심사 (Server Action - bodySizeLimit 50mb 적용)
+// ----------------------------------------------------------------
+export async function processDatasetAction(payload: {
+  taskNumber: string;
+  excelBase64: string | null;
+  pdfs: Array<{ name: string; base64: string }>;
+  projectId: string;
+}): Promise<{ pass: number; fail: number; pending: number }> {
+  const { taskNumber, excelBase64, pdfs, projectId } = payload;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('로그인이 필요합니다.');
+
+  const { data: project } = await supabase
+    .from('screen_projects')
+    .select('criteria, model, reference_date')
+    .eq('id', projectId)
+    .eq('user_id', user.id)
+    .single();
+
+  // ── Excel 파싱 ───────────────────────────────────────────────
+  const excelMap = new Map<string, ReturnType<typeof parseExcel>[number]>();
+  if (excelBase64) {
+    const buf = Buffer.from(excelBase64, 'base64');
+    const refDate = project?.reference_date ? new Date(project.reference_date) : undefined;
+    for (const app of parseExcel(buf, refDate)) {
+      excelMap.set(app.taskNumber, app);
+    }
+  }
+
+  // ── 기존 DB 레코드 확인 ──────────────────────────────────────
+  const { data: existing } = await supabase
+    .from('screen_applicants')
+    .select('task_number, id')
+    .eq('project_id', projectId)
+    .eq('user_id', user.id)
+    .eq('task_number', taskNumber);
+  const existingId = existing?.[0]?.id ?? null;
+
+  const sanitizeBD = (bd?: string): string | null => {
+    if (!bd) return null;
+    if (/^\d{4}[\.\-]\d{2}[\.\-]\d{2}$/.test(bd)) return bd.replace(/\./g, '-');
+    if (/^\d{8}$/.test(bd)) return `${bd.slice(0, 4)}-${bd.slice(4, 6)}-${bd.slice(6, 8)}`;
+    return null;
+  };
+
+  let pass = 0, fail = 0, pending = 0;
+  const excelData = excelMap.get(taskNumber) ?? null;
+
+  try {
+    const llmResult = await analyzePDFsWithOpenAI(
+      pdfs,
+      {
+        taskNumber,
+        historyType: excelData?.historyType,
+        locationHeadquarters: excelData?.locationHeadquarters,
+        residence: excelData?.residence,
+        birthDate: excelData?.birthDate,
+      },
+      project?.criteria,
+      project?.model || 'gpt-4o'
+    );
+
+    const finalStatus =
+      llmResult.status === 'Pass' ? 'Approved'
+      : llmResult.status === 'Fail' ? 'Rejected'
+      : 'Pending';
+
+    if (finalStatus === 'Approved') pass++;
+    else if (finalStatus === 'Rejected') fail++;
+    else pending++;
+
+    const llmReasoningToStore = llmResult.checkpoints
+      ? JSON.stringify({ reasoning: llmResult.reasoning, checkpoints: llmResult.checkpoints })
+      : llmResult.reasoning;
+
+    if (existingId) {
+      const { error } = await supabase.from('screen_applicants').update({
+        llm_status: llmResult.status,
+        llm_reasoning: llmReasoningToStore,
+        final_status: finalStatus,
+        updated_at: new Date().toISOString(),
+      }).eq('id', existingId);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase.from('screen_applicants').insert({
+        project_id: projectId,
+        user_id: user.id,
+        task_number: taskNumber,
+        name: excelData?.name || `지원자_${taskNumber}`,
+        birth_date: sanitizeBD(excelData?.birthDate),
+        enterprise_name: excelData?.enterpriseName ?? null,
+        history_type: excelData?.historyType ?? null,
+        location_headquarters: excelData?.locationHeadquarters ?? null,
+        residence: excelData?.residence ?? null,
+        age: excelData?.age ?? null,
+        is_youth: excelData?.isYouth ?? null,
+        is_regional: excelData?.isRegional ?? null,
+        rule_status: null,
+        llm_status: llmResult.status,
+        llm_reasoning: llmReasoningToStore,
+        final_status: finalStatus,
+        raw_data: excelData?.raw ?? null,
+      });
+      if (error) throw error;
+    }
+  } catch (err) {
+    pending++;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    try {
+      if (existingId) {
+        await supabase.from('screen_applicants').update({
+          llm_status: 'Pending',
+          llm_reasoning: `처리 오류: ${errMsg}. 수동 확인이 필요합니다.`,
+          final_status: 'Pending',
+          updated_at: new Date().toISOString(),
+        }).eq('id', existingId);
+      } else {
+        await supabase.from('screen_applicants').insert({
+          project_id: projectId,
+          user_id: user.id,
+          task_number: taskNumber,
+          name: excelData?.name || `지원자_${taskNumber}`,
+          birth_date: sanitizeBD(excelData?.birthDate),
+          enterprise_name: excelData?.enterpriseName ?? null,
+          history_type: excelData?.historyType ?? null,
+          location_headquarters: excelData?.locationHeadquarters ?? null,
+          residence: excelData?.residence ?? null,
+          age: excelData?.age ?? null,
+          is_youth: excelData?.isYouth ?? null,
+          is_regional: excelData?.isRegional ?? null,
+          rule_status: null,
+          llm_status: 'Pending',
+          llm_reasoning: `처리 오류: ${errMsg}. 수동 확인이 필요합니다.`,
+          final_status: 'Pending',
+          raw_data: excelData?.raw ?? null,
+        });
+      }
+    } catch { /* DB fallback 실패 무시 */ }
+  }
+
+  return { pass, fail, pending };
 }

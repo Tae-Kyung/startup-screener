@@ -12,7 +12,7 @@ import {
   createProjectAction, getProjectsAction, getProjectApplicantsAction,
   processExcelAction, deleteProjectAction, updateProjectSettingsAction,
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
-  exportCheckpointsAction,
+  exportCheckpointsAction, processDatasetAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
 import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
@@ -537,42 +537,15 @@ export default function Home() {
         ]);
 
         try {
-          const body = JSON.stringify({
+          const result = await processDatasetAction({
             taskNumber,
             excelBase64,
-            excelName: excelFile?.name ?? null,
             pdfs: pdfEntries,
+            projectId: selectedProject.id,
           });
-
-          // 실패 시 1회 재시도
-          let res: Response | null = null;
-          for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-              res = await fetch(`/api/process-dataset?projectId=${selectedProject.id}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body,
-              });
-              if (res.ok) break;
-              if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
-            } catch (fetchErr) {
-              if (attempt === 1) throw fetchErr;
-              await new Promise(r => setTimeout(r, 1000));
-            }
-          }
-          if (!res || !res.ok) throw new Error(`HTTP ${res?.status ?? 'unknown'}`);
-
-          const text = await res.text();
-          for (const line of text.split('\n').filter(Boolean)) {
-            try {
-              const ev = JSON.parse(line);
-              if (ev.type === 'complete') {
-                pass += ev.summary.pass;
-                fail += ev.summary.fail;
-                pending += ev.summary.pending;
-              }
-            } catch { /* skip */ }
-          }
+          pass += result.pass;
+          fail += result.fail;
+          pending += result.pending;
         } catch (err: any) {
           console.error(`[${taskNumber}] 오류:`, err);
           pending++;
