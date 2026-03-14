@@ -646,6 +646,32 @@ export async function exportCheckpointsAction(projectId: string) {
 }
 
 // ----------------------------------------------------------------
+// PDF 업로드용 Signed Upload URL 생성 (서비스 롤 키 사용)
+// ----------------------------------------------------------------
+export async function getSignedUploadUrlsAction(
+  paths: string[]
+): Promise<Array<{ path: string; signedUrl: string; token: string }>> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('로그인이 필요합니다.');
+
+  const adminSupabase = createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+  const results = await Promise.all(paths.map(async (path) => {
+    const { data, error } = await adminSupabase.storage
+      .from('pdf-temp')
+      .createSignedUploadUrl(path);
+    if (error || !data) throw new Error(`업로드 URL 생성 실패 (${path}): ${error?.message}`);
+    return { path, signedUrl: data.signedUrl, token: data.token };
+  }));
+
+  return results;
+}
+
+// ----------------------------------------------------------------
 // PDF 서류 AI 심사 (Supabase Storage 경유 - Vercel 용량 제한 우회)
 // ----------------------------------------------------------------
 export async function processDatasetAction(payload: {

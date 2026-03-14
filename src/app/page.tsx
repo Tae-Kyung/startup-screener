@@ -12,7 +12,7 @@ import {
   createProjectAction, getProjectsAction, getProjectApplicantsAction,
   processExcelAction, deleteProjectAction, updateProjectSettingsAction,
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
-  exportCheckpointsAction, processDatasetAction,
+  exportCheckpointsAction, processDatasetAction, getSignedUploadUrlsAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
 import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
@@ -528,23 +528,28 @@ export default function Home() {
         });
 
       const processTask = async (taskNumber: string) => {
-        // Excel은 작으므로 기존대로 base64, PDF는 Supabase에 직접 업로드
-        const excelBase64 = excelFile ? await toBase64(excelFile) : null;
-
-        const pdfFiles = taskGroups.get(taskNumber)!;
-        const pdfPaths = await Promise.all(pdfFiles.map(async (file, idx) => {
-          // 한글·공백 등 특수문자를 제거한 안전한 스토리지 경로 사용
-          const ext = file.name.lastIndexOf('.') >= 0 ? file.name.slice(file.name.lastIndexOf('.')) : '.pdf';
-          const safeName = `${Date.now()}_${idx}${ext}`;
-          const storagePath = `${user!.id}/${taskNumber}/${safeName}`;
-          const { error } = await supabase.storage
-            .from('pdf-temp')
-            .upload(storagePath, file, { upsert: true });
-          if (error) throw new Error(`PDF 업로드 실패 (${file.name}): ${error.message}`);
-          return { name: file.name, storagePath };
-        }));
-
         try {
+          // Excel은 작으므로 기존대로 base64, PDF는 Supabase에 직접 업로드
+          const excelBase64 = excelFile ? await toBase64(excelFile) : null;
+
+          const pdfFiles = taskGroups.get(taskNumber)!;
+          // 서버에서 서명된 업로드 URL 생성 (RLS 우회)
+          const paths = pdfFiles.map((file, idx) => {
+            const ext = file.name.lastIndexOf('.') >= 0 ? file.name.slice(file.name.lastIndexOf('.')) : '.pdf';
+            return `${user!.id}/${taskNumber}/${Date.now()}_${idx}${ext}`;
+          });
+          const signedUrls = await getSignedUploadUrlsAction(paths);
+
+          // 서명된 URL로 브라우저에서 직접 업로드
+          const pdfPaths = await Promise.all(pdfFiles.map(async (file, idx) => {
+            const { token, path: storagePath } = signedUrls[idx];
+            const { error } = await supabase.storage
+              .from('pdf-temp')
+              .uploadToSignedUrl(storagePath, token, file);
+            if (error) throw new Error(`PDF 업로드 실패 (${file.name}): ${error.message}`);
+            return { name: file.name, storagePath };
+          }));
+
           const result = await processDatasetAction({
             taskNumber,
             excelBase64,
@@ -559,7 +564,8 @@ export default function Home() {
             pending += result.pending;
           }
         } catch (err: any) {
-          console.error(`[${taskNumber}] 오류:`, err);
+          console.error(`[${taskNumber}] 처리 오류:`, err);
+          alert(`[${taskNumber}] 오류: ${err.message}`);
           pending++;
         }
 
