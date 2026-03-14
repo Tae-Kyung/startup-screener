@@ -13,7 +13,7 @@ import {
   processExcelAction, deleteProjectAction, updateProjectSettingsAction,
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
   exportCheckpointsAction, processDatasetAction, getSignedUploadUrlsAction,
-  getSkippedTasksAction,
+  getSkippedTasksAction, syncExcelDataAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
 import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
@@ -515,7 +515,21 @@ export default function Home() {
     let pass = 0, fail = 0, pending = 0, skipped = 0;
     let completed = 0;
 
+    const toBase64 = (file: File): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
     try {
+      // ── Excel 필드 기존 레코드 동기화 (빈 값 채우기) ──────────────
+      if (excelFile) {
+        const excelBase64 = await toBase64(excelFile);
+        await syncExcelDataAction(excelBase64, selectedProject.id).catch(() => {});
+      }
+
       // ── 업로드 전 이미 처리된 과제 사전 조회 ─────────────────────
       const alreadyDoneSet = await getSkippedTasksAction(taskNumbers, selectedProject.id);
       if (alreadyDoneSet.size > 0) {
@@ -526,14 +540,6 @@ export default function Home() {
       // ── 최대 3개 동시 병렬 처리 (worker pool) ────────────────────
       const CONCURRENCY = 3;
       const queue = taskNumbers.filter(t => !alreadyDoneSet.has(t));
-
-      const toBase64 = (file: File): Promise<string> =>
-        new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve((reader.result as string).split(',')[1]);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
 
       const processTask = async (taskNumber: string) => {
         try {

@@ -663,6 +663,60 @@ export async function exportCheckpointsAction(projectId: string) {
 }
 
 // ----------------------------------------------------------------
+// Excel 데이터로 기존 레코드의 빈 필드 일괄 업데이트
+// ----------------------------------------------------------------
+export async function syncExcelDataAction(
+  excelBase64: string,
+  projectId: string
+): Promise<{ updated: number }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('로그인이 필요합니다.');
+
+  const { data: project } = await supabase
+    .from('screen_projects')
+    .select('reference_date')
+    .eq('id', projectId)
+    .eq('user_id', user.id)
+    .single();
+
+  const buf = Buffer.from(excelBase64, 'base64');
+  const refDate = project?.reference_date ? new Date(project.reference_date) : undefined;
+  const applicants = parseExcel(buf, refDate);
+
+  const sanitizeBD = (bd?: string): string | null => {
+    if (!bd) return null;
+    if (/^\d{4}[\.\-]\d{2}[\.\-]\d{2}$/.test(bd)) return bd.replace(/\./g, '-');
+    if (/^\d{8}$/.test(bd)) return `${bd.slice(0, 4)}-${bd.slice(4, 6)}-${bd.slice(6, 8)}`;
+    return null;
+  };
+
+  let updated = 0;
+  for (const app of applicants) {
+    const { error } = await supabase
+      .from('screen_applicants')
+      .update({
+        name: app.name || undefined,
+        birth_date: sanitizeBD(app.birthDate) ?? undefined,
+        enterprise_name: app.enterpriseName || undefined,
+        history_type: app.historyType || undefined,
+        location_headquarters: app.locationHeadquarters || undefined,
+        residence: app.residence || undefined,
+        age: app.age ?? undefined,
+        is_youth: app.isYouth ?? undefined,
+        is_regional: app.isRegional ?? undefined,
+        raw_data: app.raw ?? undefined,
+      })
+      .eq('project_id', projectId)
+      .eq('user_id', user.id)
+      .eq('task_number', app.taskNumber);
+    if (!error) updated++;
+  }
+
+  return { updated };
+}
+
+// ----------------------------------------------------------------
 // 업로드 전 스킵 여부 사전 조회 (이미 Pass/Fail인 과제 필터링)
 // ----------------------------------------------------------------
 export async function getSkippedTasksAction(
