@@ -4,6 +4,7 @@ import { parseExcel, ApplicantData } from '@/lib/excel-utils';
 import { simulateLLMCheck, LLMResult } from '@/lib/llm-engine';
 import { createClient } from '@/lib/supabase/server';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 // ----------------------------------------------------------------
 // 유틸: 배치 처리 (Rate Limit 방지용 5건씩 순차 처리)
@@ -442,12 +443,12 @@ export async function exportCheckpointsAction(projectId: string) {
     .select('*')
     .eq('project_id', projectId)
     .eq('user_id', user.id)
-    .order('created_at', { ascending: true });
+    .order('task_number', { ascending: true });
 
   if (error) throw error;
   if (!applicants || applicants.length === 0) return { success: false, error: '데이터가 없습니다.' };
 
-  // ── llm_reasoning 파싱 헬퍼 ──────────────────────────────────
+  // ── 헬퍼 ──────────────────────────────────────────────────────
   const parseReasoning = (raw: string) => {
     try {
       const parsed = JSON.parse(raw);
@@ -456,83 +457,188 @@ export async function exportCheckpointsAction(projectId: string) {
     return null;
   };
 
-  // ── Sheet 1: 지원자 요약 ──────────────────────────────────────
-  const summaryRows = applicants.map((a: any) => {
-    const parsed = parseReasoning(a.llm_reasoning || '');
-    const failItems = parsed?.checkpoints?.filter(c => c.result === '부적합').map(c => c.criterion).join(', ') || '';
-    return {
-      '과제번호': a.task_number,
-      '성명': a.name,
-      '기업명': a.enterprise_name || '',
-      '창업유형': a.history_type || '',
-      '소재지': a.location_headquarters || '',
-      '거주지': a.residence || '',
-      '청년여부': a.is_youth ? '청년' : '비청년',
-      'AI판단': a.llm_status || '',
-      '최종상태': a.final_status || '',
-      '부적합 항목': failItems,
-      '종합판단근거': parsed?.reasoning || a.llm_reasoning || '',
-      '확정자': a.confirmed_by ? '확정됨' : '',
-      '확정의견': a.confirm_comment || '',
-    };
+  const llmKo  = (v: string) => v === 'Pass' ? '적합' : v === 'Fail' ? '부적합' : '검토필요';
+  const finalKo = (v: string) => v === 'Approved' ? '승인' : v === 'Rejected' ? '반려' : '검토중';
+
+  // ── 색상 팔레트 ───────────────────────────────────────────────
+  const C = {
+    headerBg:   '1F3864',  // 진남색 헤더
+    headerFont: 'FFFFFF',
+    approved:   'D9F2E6',  // 연초록 (승인)
+    rejected:   'FDDEDE',  // 연빨강 (반려)
+    pending:    'FFF9DB',  // 연노랑 (검토중)
+    passFont:   '1E7E34',  // 진초록 글씨
+    failFont:   'C0392B',  // 진빨강 글씨
+    pendFont:   'B7791F',  // 주황 글씨
+    border:     'BDC3C7',
+    subHeader:  'D6E4F0',  // 소제목행 배경
+  } as const;
+
+  const borderThin = (color = C.border) => ({
+    top:    { style: 'thin' as const, color: { argb: color } },
+    bottom: { style: 'thin' as const, color: { argb: color } },
+    left:   { style: 'thin' as const, color: { argb: color } },
+    right:  { style: 'thin' as const, color: { argb: color } },
   });
 
-  // ── Sheet 2: 체크포인트 상세 ──────────────────────────────────
-  const checkpointRows: object[] = [];
+  const rowBg = (finalStatus: string) =>
+    finalStatus === 'Approved' ? C.approved : finalStatus === 'Rejected' ? C.rejected : C.pending;
+
+  const statusFont = (val: string) =>
+    val === '적합' || val === '승인' ? C.passFont : val === '부적합' || val === '반려' ? C.failFont : C.pendFont;
+
+  const applyHeader = (row: ExcelJS.Row) => {
+    row.height = 26;
+    row.eachCell(cell => {
+      cell.font      = { bold: true, color: { argb: C.headerFont }, size: 11 };
+      cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.border    = borderThin();
+    });
+  };
+
+  const applyDataCell = (cell: ExcelJS.Cell, bg: string) => {
+    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+    cell.border    = borderThin();
+    cell.alignment = { vertical: 'middle', wrapText: true };
+  };
+
+  // ── 워크북 생성 ───────────────────────────────────────────────
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'AI 서류 심사 시스템';
+  wb.created = new Date();
+
+  // ════════════════════════════════════════════════════════════════
+  // Sheet 1: 지원자 요약
+  // ════════════════════════════════════════════════════════════════
+  const ws1 = wb.addWorksheet('지원자 요약');
+  ws1.columns = [
+    { key: 'no',           header: 'No.',       width: 6  },
+    { key: 'task_number',  header: '과제번호',   width: 14 },
+    { key: 'name',         header: '성명',       width: 10 },
+    { key: 'enterprise',   header: '기업명',     width: 24 },
+    { key: 'history_type', header: '창업유형',   width: 14 },
+    { key: 'hq',           header: '본점 소재지', width: 24 },
+    { key: 'residence',    header: '거주지',     width: 24 },
+    { key: 'birth_date',   header: '생년월일',   width: 13 },
+    { key: 'age',          header: '나이',       width: 7  },
+    { key: 'is_youth',     header: '청년여부',   width: 10 },
+    { key: 'is_regional',  header: '권역여부',   width: 10 },
+    { key: 'llm_status',   header: 'AI 판단',    width: 10 },
+    { key: 'final_status', header: '최종상태',   width: 10 },
+    { key: 'fail_items',   header: '부적합 항목', width: 34 },
+    { key: 'reasoning',    header: '종합 판단 근거', width: 54 },
+    { key: 'comment',      header: '확정 의견',  width: 30 },
+  ];
+
+  applyHeader(ws1.getRow(1));
+  ws1.views = [{ state: 'frozen', ySplit: 1, xSplit: 2 }];
+  ws1.autoFilter = { from: 'A1', to: { row: 1, column: ws1.columns.length } };
+
+  applicants.forEach((a: any, idx: number) => {
+    const parsed    = parseReasoning(a.llm_reasoning || '');
+    const failItems = parsed?.checkpoints?.filter(c => c.result === '부적합').map(c => c.criterion).join(', ') || '-';
+    const llmLabel  = llmKo(a.llm_status || '');
+    const finalLabel = finalKo(a.final_status || '');
+
+    const row = ws1.addRow({
+      no:           idx + 1,
+      task_number:  a.task_number,
+      name:         a.name || '-',
+      enterprise:   a.enterprise_name || '-',
+      history_type: a.history_type || '-',
+      hq:           a.location_headquarters || '-',
+      residence:    a.residence || '-',
+      birth_date:   a.birth_date || '-',
+      age:          a.age != null ? a.age : '-',
+      is_youth:     a.is_youth === true ? '청년' : a.is_youth === false ? '비청년' : '-',
+      is_regional:  a.is_regional === true ? '권역내' : a.is_regional === false ? '권역외' : '-',
+      llm_status:   llmLabel,
+      final_status: finalLabel,
+      fail_items:   failItems,
+      reasoning:    parsed?.reasoning || a.llm_reasoning || '-',
+      comment:      a.confirm_comment || '-',
+    });
+
+    const bg = rowBg(a.final_status || '');
+    row.height = 20;
+    row.eachCell(cell => applyDataCell(cell, bg));
+
+    // AI판단·최종상태 컬럼 글씨 색상
+    const llmCell   = row.getCell('llm_status');
+    const finalCell = row.getCell('final_status');
+    llmCell.font   = { bold: true, color: { argb: statusFont(llmLabel) } };
+    finalCell.font = { bold: true, color: { argb: statusFont(finalLabel) } };
+    // 과제번호 가운데 정렬
+    row.getCell('no').alignment          = { horizontal: 'center', vertical: 'middle' };
+    row.getCell('task_number').alignment = { horizontal: 'center', vertical: 'middle' };
+    row.getCell('age').alignment         = { horizontal: 'center', vertical: 'middle' };
+    row.getCell('is_youth').alignment    = { horizontal: 'center', vertical: 'middle' };
+    row.getCell('is_regional').alignment = { horizontal: 'center', vertical: 'middle' };
+    row.getCell('llm_status').alignment  = { horizontal: 'center', vertical: 'middle' };
+    row.getCell('final_status').alignment= { horizontal: 'center', vertical: 'middle' };
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // Sheet 2: 체크포인트 상세
+  // ════════════════════════════════════════════════════════════════
+  const ws2 = wb.addWorksheet('체크포인트 상세');
+  ws2.columns = [
+    { key: 'task_number',  header: '과제번호',   width: 14 },
+    { key: 'name',         header: '성명',       width: 10 },
+    { key: 'enterprise',   header: '기업명',     width: 24 },
+    { key: 'final_status', header: '최종상태',   width: 10 },
+    { key: 'criterion',    header: '심사 항목',  width: 18 },
+    { key: 'document',     header: '확인 서류',  width: 30 },
+    { key: 'finding',      header: '확인 내용',  width: 54 },
+    { key: 'result',       header: '결과',       width: 10 },
+  ];
+
+  applyHeader(ws2.getRow(1));
+  ws2.views = [{ state: 'frozen', ySplit: 1, xSplit: 2 }];
+  ws2.autoFilter = { from: 'A1', to: { row: 1, column: ws2.columns.length } };
+
   for (const a of applicants as any[]) {
-    const parsed = parseReasoning(a.llm_reasoning || '');
-    if (parsed?.checkpoints?.length) {
-      for (const cp of parsed.checkpoints) {
-        checkpointRows.push({
-          '과제번호': a.task_number,
-          '성명': a.name,
-          '기업명': a.enterprise_name || '',
-          'AI판단': a.llm_status || '',
-          '최종상태': a.final_status || '',
-          '심사항목': cp.criterion,
-          '확인서류': cp.document,
-          '확인내용': cp.finding,
-          '결과': cp.result,
-        });
-      }
-    } else {
-      // 체크포인트 없는 경우 (엑셀 기반 분석)
-      checkpointRows.push({
-        '과제번호': a.task_number,
-        '성명': a.name,
-        '기업명': a.enterprise_name || '',
-        'AI판단': a.llm_status || '',
-        '최종상태': a.final_status || '',
-        '심사항목': '(텍스트 분석)',
-        '확인서류': '-',
-        '확인내용': a.llm_reasoning || '',
-        '결과': a.llm_status === 'Pass' ? '적합' : a.llm_status === 'Fail' ? '부적합' : '확인불가',
+    const parsed      = parseReasoning(a.llm_reasoning || '');
+    const finalLabel  = finalKo(a.final_status || '');
+    const bg          = rowBg(a.final_status || '');
+
+    const cpList = parsed?.checkpoints?.length
+      ? parsed.checkpoints
+      : [{ criterion: '종합 분석', document: '-', finding: a.llm_reasoning || '-', result: a.llm_status === 'Pass' ? '적합' : a.llm_status === 'Fail' ? '부적합' : '확인불가' }];
+
+    for (const cp of cpList) {
+      const row = ws2.addRow({
+        task_number:  a.task_number,
+        name:         a.name || '-',
+        enterprise:   a.enterprise_name || '-',
+        final_status: finalLabel,
+        criterion:    cp.criterion,
+        document:     cp.document,
+        finding:      cp.finding,
+        result:       cp.result,
       });
+
+      row.height = 20;
+      row.eachCell(cell => applyDataCell(cell, bg));
+
+      // 결과 컬럼 색상
+      const resultCell = row.getCell('result');
+      const resultColor =
+        cp.result === '적합'  ? C.passFont :
+        cp.result === '부적합' ? C.failFont : C.pendFont;
+      resultCell.font      = { bold: true, color: { argb: resultColor } };
+      resultCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      row.getCell('task_number').alignment  = { horizontal: 'center', vertical: 'middle' };
+      row.getCell('final_status').alignment = { horizontal: 'center', vertical: 'middle' };
+      row.getCell('final_status').font = { bold: true, color: { argb: statusFont(finalLabel) } };
     }
   }
 
-  // ── 워크북 생성 ───────────────────────────────────────────────
-  const wb = XLSX.utils.book_new();
-
-  const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
-  // 컬럼 너비 설정
-  wsSummary['!cols'] = [
-    { wch: 12 }, { wch: 8 }, { wch: 20 }, { wch: 12 }, { wch: 20 },
-    { wch: 20 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 30 },
-    { wch: 50 }, { wch: 8 }, { wch: 30 },
-  ];
-  XLSX.utils.book_append_sheet(wb, wsSummary, '지원자 요약');
-
-  const wsCheckpoints = XLSX.utils.json_to_sheet(checkpointRows);
-  wsCheckpoints['!cols'] = [
-    { wch: 12 }, { wch: 8 }, { wch: 20 }, { wch: 8 }, { wch: 8 },
-    { wch: 15 }, { wch: 25 }, { wch: 50 }, { wch: 8 },
-  ];
-  XLSX.utils.book_append_sheet(wb, wsCheckpoints, '체크포인트 상세');
-
   // ── base64로 반환 ─────────────────────────────────────────────
-  const buf = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-  const filename = `${project?.title || 'screening'}_체크포인트_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const buffer = await wb.xlsx.writeBuffer();
+  const base64 = Buffer.from(buffer).toString('base64');
+  const filename = `${project?.title || 'screening'}_심사결과_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
-  return { success: true, data: buf as string, filename };
+  return { success: true, data: base64 as string, filename };
 }
