@@ -149,6 +149,42 @@ export async function POST(request: NextRequest) {
       } catch (err) {
         console.error(`[${taskNumber}] 처리 오류:`, err);
         pending++;
+        // 오류가 발생해도 Pending 상태로 DB에 저장 (누락 방지)
+        try {
+          const existingId = existingMap.get(taskNumber);
+          const errMsg = err instanceof Error ? err.message : '처리 중 오류 발생';
+          if (existingId) {
+            await supabase.from('screen_applicants').update({
+              llm_status: 'Pending',
+              llm_reasoning: `처리 오류: ${errMsg}. 수동 확인이 필요합니다.`,
+              final_status: 'Pending',
+              updated_at: new Date().toISOString(),
+            }).eq('id', existingId);
+          } else {
+            const excelData = excelMap.get(taskNumber) ?? null;
+            await supabase.from('screen_applicants').insert({
+              project_id: projectId,
+              user_id: user.id,
+              task_number: taskNumber,
+              name: excelData?.name || `지원자_${taskNumber}`,
+              birth_date: sanitizeBD(excelData?.birthDate),
+              enterprise_name: excelData?.enterpriseName ?? null,
+              history_type: excelData?.historyType ?? null,
+              location_headquarters: excelData?.locationHeadquarters ?? null,
+              residence: excelData?.residence ?? null,
+              age: excelData?.age ?? null,
+              is_youth: excelData?.isYouth ?? null,
+              is_regional: excelData?.isRegional ?? null,
+              rule_status: null,
+              llm_status: 'Pending',
+              llm_reasoning: `처리 오류: ${errMsg}. 수동 확인이 필요합니다.`,
+              final_status: 'Pending',
+              raw_data: excelData?.raw ?? null,
+            });
+          }
+        } catch (dbErr) {
+          console.error(`[${taskNumber}] DB 저장 오류:`, dbErr);
+        }
       }
     }
 

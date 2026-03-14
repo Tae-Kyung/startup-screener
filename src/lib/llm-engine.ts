@@ -160,6 +160,7 @@ ${criteriaText}
     const response = await (openai as any).responses.create({
       model,
       input: [{ role: 'user', content: contentParts }],
+      text: { format: { type: 'json_object' } },
     });
 
     const text: string = response.output_text || '';
