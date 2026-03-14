@@ -3,6 +3,8 @@
 import { parseExcel, ApplicantData } from '@/lib/excel-utils';
 import { simulateLLMCheck, LLMResult, analyzePDFsWithOpenAI } from '@/lib/llm-engine';
 import { createClient } from '@/lib/supabase/server';
+import { createClient as createAdminClient } from '@supabase/supabase-js';
+import OpenAI from 'openai';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 
@@ -644,15 +646,15 @@ export async function exportCheckpointsAction(projectId: string) {
 }
 
 // ----------------------------------------------------------------
-// PDF 서류 AI 심사 (Server Action - bodySizeLimit 50mb 적용)
+// PDF 서류 AI 심사 (Supabase Storage 경유 - Vercel 용량 제한 우회)
 // ----------------------------------------------------------------
 export async function processDatasetAction(payload: {
   taskNumber: string;
   excelBase64: string | null;
-  pdfs: Array<{ name: string; base64: string }>;
+  pdfPaths: Array<{ name: string; storagePath: string }>;
   projectId: string;
-}): Promise<{ pass: number; fail: number; pending: number }> {
-  const { taskNumber, excelBase64, pdfs, projectId } = payload;
+}): Promise<{ pass: number; fail: number; pending: number; skipped?: boolean }> {
+  const { taskNumber, excelBase64, pdfPaths, projectId } = payload;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -678,11 +680,22 @@ export async function processDatasetAction(payload: {
   // ── 기존 DB 레코드 확인 ──────────────────────────────────────
   const { data: existing } = await supabase
     .from('screen_applicants')
-    .select('task_number, id')
+    .select('id, llm_status, final_status')
     .eq('project_id', projectId)
     .eq('user_id', user.id)
-    .eq('task_number', taskNumber);
-  const existingId = existing?.[0]?.id ?? null;
+    .eq('task_number', taskNumber)
+    .single();
+  const existingId = existing?.id ?? null;
+
+  // ── 이미 처리된 과제는 스킵 ──────────────────────────────────
+  if (existing?.llm_status === 'Pass' || existing?.llm_status === 'Fail') {
+    return {
+      pass: existing.final_status === 'Approved' ? 1 : 0,
+      fail: existing.final_status === 'Rejected' ? 1 : 0,
+      pending: 0,
+      skipped: true,
+    };
+  }
 
   const sanitizeBD = (bd?: string): string | null => {
     if (!bd) return null;
@@ -691,12 +704,39 @@ export async function processDatasetAction(payload: {
     return null;
   };
 
+  const adminSupabase = createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+  const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
   let pass = 0, fail = 0, pending = 0;
   const excelData = excelMap.get(taskNumber) ?? null;
+  const openaiFileIds: string[] = [];
 
   try {
+    // 1. Supabase signed URL 생성 → OpenAI Files API 업로드
+    const pdfsForAnalysis = await Promise.all(pdfPaths.map(async ({ name, storagePath }) => {
+      const { data: urlData, error: urlError } = await adminSupabase.storage
+        .from('pdf-temp')
+        .createSignedUrl(storagePath, 120);
+      if (urlError || !urlData?.signedUrl) throw new Error(`Signed URL 생성 실패: ${name}`);
+
+      const res = await fetch(urlData.signedUrl);
+      if (!res.ok) throw new Error(`PDF 다운로드 실패: ${name}`);
+      const buffer = await res.arrayBuffer();
+
+      const uploaded = await openaiClient.files.create({
+        file: new File([buffer], name, { type: 'application/pdf' }),
+        purpose: 'user_data',
+      });
+      openaiFileIds.push(uploaded.id);
+      return { name, fileId: uploaded.id };
+    }));
+
+    // 2. LLM 분석
     const llmResult = await analyzePDFsWithOpenAI(
-      pdfs,
+      pdfsForAnalysis,
       {
         taskNumber,
         historyType: excelData?.historyType,
@@ -784,6 +824,14 @@ export async function processDatasetAction(payload: {
         });
       }
     } catch { /* DB fallback 실패 무시 */ }
+  } finally {
+    // 3. 분석 완료 후 즉시 삭제 (성공/실패 무관)
+    await Promise.allSettled([
+      ...openaiFileIds.map(id => openaiClient.files.delete(id)),
+      pdfPaths.length > 0
+        ? adminSupabase.storage.from('pdf-temp').remove(pdfPaths.map(p => p.storagePath))
+        : Promise.resolve(),
+    ]);
   }
 
   return { pass, fail, pending };

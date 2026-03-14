@@ -65,8 +65,8 @@ const translations = {
     folderUploadBtn: "dataset 폴더 업로드 (PDF 분석)",
     processing: "처리 중...",
     folderProcessing: "서류 분석 중...",
-    folderProgress: (current: number, total: number, taskNumber: string) =>
-      `분석 중 ${current}/${total}: 과제번호 ${taskNumber}`,
+    folderProgress: (current: number, total: number, taskNumber: string, skipped: number) =>
+      `분석 중 ${current}/${total}${skipped > 0 ? ` (${skipped}건 건너뜀)` : ''}: 과제번호 ${taskNumber}`,
     stats: {
       total: "전체 지원자",
       passed: "심사 적격 (Approved)",
@@ -166,8 +166,8 @@ const translations = {
     folderUploadBtn: "Upload dataset Folder (PDF Analysis)",
     processing: "Processing...",
     folderProcessing: "Analyzing documents...",
-    folderProgress: (current: number, total: number, taskNumber: string) =>
-      `Analyzing ${current}/${total}: Task ${taskNumber}`,
+    folderProgress: (current: number, total: number, taskNumber: string, skipped: number) =>
+      `Analyzing ${current}/${total}${skipped > 0 ? ` (${skipped} skipped)` : ''}: Task ${taskNumber}`,
     stats: {
       total: "Total Applicants",
       passed: "Approved",
@@ -282,7 +282,7 @@ export default function Home() {
 
   // dataset 폴더 업로드 (PDF 분석)
   const [isFolderProcessing, setIsFolderProcessing] = useState(false);
-  const [folderProgress, setFolderProgress] = useState<{ current: number; total: number; taskNumber: string } | null>(null);
+  const [folderProgress, setFolderProgress] = useState<{ current: number; total: number; taskNumber: string; skipped: number } | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
   const supabase = createClient();
@@ -509,9 +509,9 @@ export default function Home() {
     if (!confirm(confirmMsg)) return;
 
     setIsFolderProcessing(true);
-    setFolderProgress({ current: 0, total: taskNumbers.length, taskNumber: '' });
+    setFolderProgress({ current: 0, total: taskNumbers.length, taskNumber: '', skipped: 0 });
 
-    let pass = 0, fail = 0, pending = 0;
+    let pass = 0, fail = 0, pending = 0, skipped = 0;
     let completed = 0;
 
     try {
@@ -528,31 +528,45 @@ export default function Home() {
         });
 
       const processTask = async (taskNumber: string) => {
-        const [excelBase64, ...pdfEntries] = await Promise.all([
-          excelFile ? toBase64(excelFile) : Promise.resolve(null),
-          ...taskGroups.get(taskNumber)!.map(async (f) => ({
-            name: f.name,
-            base64: await toBase64(f),
-          })),
-        ]);
+        // Excel은 작으므로 기존대로 base64, PDF는 Supabase에 직접 업로드
+        const excelBase64 = excelFile ? await toBase64(excelFile) : null;
+
+        const pdfFiles = taskGroups.get(taskNumber)!;
+        const pdfPaths = await Promise.all(pdfFiles.map(async (file) => {
+          const storagePath = `${user!.id}/${taskNumber}/${Date.now()}_${file.name}`;
+          const { error } = await supabase.storage
+            .from('pdf-temp')
+            .upload(storagePath, file, { upsert: true });
+          if (error) throw new Error(`PDF 업로드 실패 (${file.name}): ${error.message}`);
+          return { name: file.name, storagePath };
+        }));
 
         try {
           const result = await processDatasetAction({
             taskNumber,
             excelBase64,
-            pdfs: pdfEntries,
+            pdfPaths,
             projectId: selectedProject.id,
           });
-          pass += result.pass;
-          fail += result.fail;
-          pending += result.pending;
+          if (result.skipped) {
+            skipped++;
+          } else {
+            pass += result.pass;
+            fail += result.fail;
+            pending += result.pending;
+          }
         } catch (err: any) {
           console.error(`[${taskNumber}] 오류:`, err);
           pending++;
         }
 
         completed++;
-        setFolderProgress({ current: completed, total: taskNumbers.length, taskNumber });
+        setFolderProgress({
+          current: completed,
+          total: taskNumbers.length,
+          taskNumber,
+          skipped,
+        });
       };
 
       const workers = Array.from({ length: Math.min(CONCURRENCY, taskNumbers.length) }, async () => {
@@ -827,7 +841,7 @@ export default function Home() {
           <Loader2 className="h-5 w-5 animate-spin text-primary shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-black text-primary">
-              {t.folderProgress(folderProgress.current, folderProgress.total, folderProgress.taskNumber)}
+              {t.folderProgress(folderProgress.current, folderProgress.total, folderProgress.taskNumber, folderProgress.skipped)}
             </p>
             <div className="mt-2 h-1.5 rounded-full bg-primary/10 overflow-hidden">
               <div

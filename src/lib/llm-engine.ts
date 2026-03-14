@@ -100,7 +100,7 @@ export interface PDFAnalysisContext {
  * base64 인코딩된 PDF를 인라인으로 전달하므로 별도 파일 업로드가 불필요합니다.
  */
 export async function analyzePDFsWithOpenAI(
-  pdfFiles: Array<{ name: string; base64: string }>,
+  pdfFiles: Array<{ name: string; base64: string } | { name: string; fileId: string }>,
   context: PDFAnalysisContext,
   criteria?: string,
   model: string = 'gpt-4o'
@@ -148,11 +148,18 @@ ${criteriaText}
   ];
 
   for (const pdf of pdfFiles) {
-    contentParts.push({
-      type: 'input_file',
-      filename: pdf.name,
-      file_data: `data:application/pdf;base64,${pdf.base64}`,
-    });
+    if ('fileId' in pdf) {
+      contentParts.push({
+        type: 'input_file',
+        file_id: (pdf as { name: string; fileId: string }).fileId,
+      });
+    } else {
+      contentParts.push({
+        type: 'input_file',
+        filename: pdf.name,
+        file_data: `data:application/pdf;base64,${(pdf as { name: string; base64: string }).base64}`,
+      });
+    }
   }
 
   try {
