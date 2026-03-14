@@ -637,6 +637,23 @@ export async function exportCheckpointsAction(projectId: string) {
     }
   }
 
+  // ── 컬럼 너비 자동 조정 (내용 기준) ──────────────────────────
+  const autoFitColumns = (ws: ExcelJS.Worksheet) => {
+    ws.columns.forEach(col => {
+      if (!col.key || !col.eachCell) return;
+      let maxLen = col.header ? String(col.header).length : 10;
+      col.eachCell({ includeEmpty: false }, (cell: ExcelJS.Cell) => {
+        const val = cell.value != null ? String(cell.value) : '';
+        const lines = val.split('\n');
+        const len = lines.reduce((m: number, l: string) => Math.max(m, l.length), 0);
+        maxLen = Math.max(maxLen, len);
+      });
+      col.width = Math.min(Math.max(maxLen + 2, 8), 60);
+    });
+  };
+  autoFitColumns(ws1);
+  autoFitColumns(ws2);
+
   // ── base64로 반환 ─────────────────────────────────────────────
   const buffer = await wb.xlsx.writeBuffer();
   const base64 = Buffer.from(buffer).toString('base64');

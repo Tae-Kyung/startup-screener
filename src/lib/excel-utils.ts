@@ -88,6 +88,19 @@ export const computeRuleStatus = (isRegional: boolean): 'Pass' | 'Fail' => {
   return isRegional ? 'Pass' : 'Fail';
 };
 
+/**
+ * 주민등록번호(YYMMDD-N******)에서 생년월일(YYYY-MM-DD) 추출
+ * 7번째 자리: 1·2 → 1900년대, 3·4 → 2000년대
+ */
+function extractBirthFromRRN(rrn: string): string {
+  const match = String(rrn).match(/^(\d{2})(\d{2})(\d{2})-?(\d)/);
+  if (!match) return '';
+  const [, yy, mm, dd, genderDigit] = match;
+  const g = parseInt(genderDigit);
+  const century = (g === 1 || g === 2) ? '19' : '20';
+  return `${century}${yy}-${mm}-${dd}`;
+}
+
 export const parseExcel = (
   buffer: Buffer,
   referenceDate?: Date,
@@ -95,12 +108,12 @@ export const parseExcel = (
 ): ApplicantData[] => {
   const cols = {
     taskNumber: columnMapping?.taskNumber || 'D',
-    name: columnMapping?.name || 'F',
-    enterpriseName: columnMapping?.enterpriseName || 'E',
-    birthDate: columnMapping?.birthDate || 'T',
-    historyType: columnMapping?.historyType || 'AN',
-    locationHeadquarters: columnMapping?.locationHeadquarters || 'AZ',
-    residence: columnMapping?.residence || 'AC',
+    name: columnMapping?.name || 'S',          // 대표자명
+    enterpriseName: columnMapping?.enterpriseName || 'AI', // 기관명
+    birthDate: columnMapping?.birthDate || 'T', // 주민등록번호 (추출 처리)
+    historyType: columnMapping?.historyType || 'AM', // 창업형태
+    locationHeadquarters: columnMapping?.locationHeadquarters || 'AZ', // 주소(사업장)
+    residence: columnMapping?.residence || 'AC', // 주소
   };
 
   const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -115,10 +128,16 @@ export const parseExcel = (
   });
 
   return dataRows.map((row: any, index: number) => {
-    const historyType = row[cols.historyType] || '';
+    const enterpriseNameRaw = String(row[cols.enterpriseName] || '');
+    // 창업형태(AM)가 비어있고 기관명이 '예비창업자'인 경우 예비창업자로 처리
+    let historyType = String(row[cols.historyType] || '');
+    if (!historyType && enterpriseNameRaw.includes('예비창업')) {
+      historyType = '예비창업자';
+    }
     const locationHeadquarters = row[cols.locationHeadquarters] || '';
     const residence = row[cols.residence] || '';
-    const birthDate = String(row[cols.birthDate] || '');
+    const rrnRaw = String(row[cols.birthDate] || '');
+    const birthDate = extractBirthFromRRN(rrnRaw) || rrnRaw;
 
     const age = calculateAge(birthDate, referenceDate);
     const isYouth = age > 0 && age <= 39;
@@ -132,7 +151,7 @@ export const parseExcel = (
       name: row[cols.name] || '',
       taskNumber: String(row[cols.taskNumber] || ''),
       birthDate,
-      enterpriseName: row[cols.enterpriseName] || '',
+      enterpriseName: enterpriseNameRaw,
       historyType,
       locationHeadquarters,
       residence,
