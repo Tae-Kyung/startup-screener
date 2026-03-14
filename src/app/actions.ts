@@ -923,8 +923,35 @@ export async function processDatasetAction(payload: {
       ? JSON.stringify({ reasoning: llmResult.reasoning, checkpoints: llmResult.checkpoints })
       : llmResult.reasoning;
 
+    // PDF 추출 데이터 우선, 없으면 Excel 데이터 사용
+    const ext = llmResult.extractedData ?? {};
+    const resolvedName             = ext.name             || excelData?.name             || `지원자_${taskNumber}`;
+    const resolvedEnterpriseName   = ext.enterpriseName   || excelData?.enterpriseName   || null;
+    const resolvedHistoryType      = ext.historyType      || excelData?.historyType      || null;
+    const resolvedLocation         = ext.locationHeadquarters || excelData?.locationHeadquarters || null;
+    const resolvedResidence        = ext.residence        || excelData?.residence        || null;
+    const resolvedBirthDate        = sanitizeBD(ext.birthDate || excelData?.birthDate);
+
+    // 나이/청년/권역 계산 (생년월일 기반)
+    const { calculateAge, checkRegional } = await import('@/lib/excel-utils');
+    const refDate = project?.reference_date ? new Date(project.reference_date) : undefined;
+    const resolvedAge = resolvedBirthDate ? calculateAge(resolvedBirthDate, refDate) : (excelData?.age ?? null);
+    const resolvedIsYouth = resolvedAge != null && resolvedAge > 0 ? resolvedAge <= 39 : (excelData?.isYouth ?? null);
+    const resolvedIsRegional = resolvedHistoryType?.includes('예비')
+      ? checkRegional(resolvedResidence ?? '')
+      : checkRegional(resolvedLocation ?? '');
+
     if (existingId) {
       const { error } = await supabase.from('screen_applicants').update({
+        name: resolvedName,
+        enterprise_name: resolvedEnterpriseName,
+        history_type: resolvedHistoryType,
+        location_headquarters: resolvedLocation,
+        residence: resolvedResidence,
+        birth_date: resolvedBirthDate,
+        age: resolvedAge,
+        is_youth: resolvedIsYouth,
+        is_regional: resolvedIsRegional,
         llm_status: llmResult.status,
         llm_reasoning: llmReasoningToStore,
         final_status: finalStatus,
@@ -936,15 +963,15 @@ export async function processDatasetAction(payload: {
         project_id: projectId,
         user_id: user.id,
         task_number: taskNumber,
-        name: excelData?.name || `지원자_${taskNumber}`,
-        birth_date: sanitizeBD(excelData?.birthDate),
-        enterprise_name: excelData?.enterpriseName ?? null,
-        history_type: excelData?.historyType ?? null,
-        location_headquarters: excelData?.locationHeadquarters ?? null,
-        residence: excelData?.residence ?? null,
-        age: excelData?.age ?? null,
-        is_youth: excelData?.isYouth ?? null,
-        is_regional: excelData?.isRegional ?? null,
+        name: resolvedName,
+        birth_date: resolvedBirthDate,
+        enterprise_name: resolvedEnterpriseName,
+        history_type: resolvedHistoryType,
+        location_headquarters: resolvedLocation,
+        residence: resolvedResidence,
+        age: resolvedAge,
+        is_youth: resolvedIsYouth,
+        is_regional: resolvedIsRegional,
         rule_status: null,
         llm_status: llmResult.status,
         llm_reasoning: llmReasoningToStore,

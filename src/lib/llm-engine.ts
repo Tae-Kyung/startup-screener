@@ -9,10 +9,20 @@ export interface CheckpointItem {
   result: '적합' | '부적합' | '확인불가';
 }
 
+export interface ExtractedApplicantData {
+  name?: string;
+  enterpriseName?: string;
+  historyType?: string;
+  locationHeadquarters?: string;
+  residence?: string;
+  birthDate?: string;
+}
+
 export interface LLMResult {
   status: 'Pass' | 'Fail' | 'Pending';
   reasoning: string;
   checkpoints?: CheckpointItem[];
+  extractedData?: ExtractedApplicantData;
 }
 
 const openai = new OpenAI({
@@ -112,13 +122,15 @@ export async function analyzePDFsWithOpenAI(
   const criteriaText = criteria || DEFAULT_CRITERIA;
 
   const prompt = `당신은 창업 지원 자격 요건 검토 전문가입니다.
-첨부된 PDF 서류(신청서, 사업계획서, 기타 제출 서류)를 직접 읽고, 아래 [심사 기준]에 따라 적격성을 판단하세요.
-엑셀 보조 데이터도 참고하되, 실제 서류 내용을 우선합니다.
+첨부된 PDF 서류(신청서, 사업계획서, 기타 제출 서류)를 직접 읽고 두 가지 작업을 수행하세요.
+
+[작업 1] 지원자 기본 정보를 서류에서 추출하세요.
+[작업 2] 아래 [심사 기준]에 따라 적격성을 판단하세요.
 
 [심사 기준]
 ${criteriaText}
 
-[엑셀 보조 데이터 - 과제번호 ${context.taskNumber}]
+[참고 데이터 - 과제번호 ${context.taskNumber}]
 - 창업 유형: ${context.historyType || '서류 확인 필요'}
 - 본점 소재지: ${context.locationHeadquarters || '서류 확인 필요'}
 - 거주지: ${context.residence || '서류 확인 필요'}
@@ -131,6 +143,14 @@ ${criteriaText}
 
 [출력 형식] 반드시 아래 JSON만 출력하세요 (다른 텍스트 금지):
 {
+  "extractedData": {
+    "name": "대표자 성명 (서류에서 확인, 없으면 null)",
+    "enterpriseName": "기업명 또는 기관명 (없으면 null)",
+    "historyType": "창업 유형 (예비창업자/창업3년이하/창업7년이하 등, 없으면 null)",
+    "locationHeadquarters": "본점 소재지 전체 주소 (없으면 null)",
+    "residence": "대표자 거주지 주소 (없으면 null)",
+    "birthDate": "생년월일 YYYY-MM-DD 형식 (없으면 null)"
+  },
   "status": "Pass | Fail | Pending",
   "reasoning": "종합 판단 근거 (2~3문장, 한국어)",
   "checkpoints": [
