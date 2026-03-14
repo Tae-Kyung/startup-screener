@@ -663,6 +663,28 @@ export async function exportCheckpointsAction(projectId: string) {
 }
 
 // ----------------------------------------------------------------
+// 업로드 전 스킵 여부 사전 조회 (이미 Pass/Fail인 과제 필터링)
+// ----------------------------------------------------------------
+export async function getSkippedTasksAction(
+  taskNumbers: string[],
+  projectId: string
+): Promise<Set<string>> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('로그인이 필요합니다.');
+
+  const { data } = await supabase
+    .from('screen_applicants')
+    .select('task_number, llm_status')
+    .eq('project_id', projectId)
+    .eq('user_id', user.id)
+    .in('task_number', taskNumbers)
+    .in('llm_status', ['Pass', 'Fail']);
+
+  return new Set((data ?? []).map((r: any) => String(r.task_number)));
+}
+
+// ----------------------------------------------------------------
 // PDF 업로드용 Signed Upload URL 생성 (서비스 롤 키 사용)
 // ----------------------------------------------------------------
 export async function getSignedUploadUrlsAction(

@@ -13,6 +13,7 @@ import {
   processExcelAction, deleteProjectAction, updateProjectSettingsAction,
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
   exportCheckpointsAction, processDatasetAction, getSignedUploadUrlsAction,
+  getSkippedTasksAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
 import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
@@ -515,9 +516,16 @@ export default function Home() {
     let completed = 0;
 
     try {
+      // ── 업로드 전 이미 처리된 과제 사전 조회 ─────────────────────
+      const alreadyDoneSet = await getSkippedTasksAction(taskNumbers, selectedProject.id);
+      if (alreadyDoneSet.size > 0) {
+        skipped += alreadyDoneSet.size;
+        completed += alreadyDoneSet.size;
+      }
+
       // ── 최대 3개 동시 병렬 처리 (worker pool) ────────────────────
       const CONCURRENCY = 3;
-      const queue = [...taskNumbers];
+      const queue = taskNumbers.filter(t => !alreadyDoneSet.has(t));
 
       const toBase64 = (file: File): Promise<string> =>
         new Promise((resolve, reject) => {
