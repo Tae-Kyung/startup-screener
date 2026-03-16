@@ -542,10 +542,16 @@ export default function Home() {
           // 서명된 URL로 브라우저에서 직접 업로드
           const pdfPaths = await Promise.all(pdfFiles.map(async (file, idx) => {
             const { token, path: storagePath } = signedUrls[idx];
-            const { error } = await supabase.storage
-              .from('pdf-temp')
-              .uploadToSignedUrl(storagePath, token, file);
-            if (error) throw new Error(`PDF 업로드 실패 (${file.name}): ${error.message}`);
+            let uploadError: any = null;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt));
+              const { error } = await supabase.storage
+                .from('pdf-temp')
+                .uploadToSignedUrl(storagePath, token, file);
+              if (!error) { uploadError = null; break; }
+              uploadError = error;
+            }
+            if (uploadError) throw new Error(`PDF 업로드 실패 (${file.name}): ${uploadError.message}`);
             return { name: file.name, storagePath };
           }));
 
