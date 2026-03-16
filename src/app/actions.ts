@@ -873,15 +873,22 @@ export async function processDatasetAction(payload: {
   try {
     // 1. Supabase signed URL 생성 → OpenAI Files API 업로드
     const pdfsForAnalysis = await Promise.all(pdfPaths.map(async ({ name, storagePath }) => {
-      const { data: urlData, error: urlError } = await adminSupabase.storage
-        .from('pdf-temp')
-        .createSignedUrl(storagePath, 120);
-      if (urlError || !urlData?.signedUrl) {
-        console.error(`[processDatasetAction][${taskNumber}] Signed URL 생성 실패:`, storagePath, urlError);
+      // 업로드 직후 일시적으로 파일이 조회 안 될 수 있으므로 최대 3회 재시도
+      let urlData: { signedUrl: string } | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt));
+        const { data, error: urlError } = await adminSupabase.storage
+          .from('pdf-temp')
+          .createSignedUrl(storagePath, 120);
+        if (!urlError && data?.signedUrl) { urlData = data; break; }
+        console.warn(`[processDatasetAction][${taskNumber}] Signed URL 재시도 ${attempt + 1}:`, storagePath, urlError);
+      }
+      if (!urlData?.signedUrl) {
+        console.error(`[processDatasetAction][${taskNumber}] Signed URL 생성 실패:`, storagePath);
         throw new Error(`Signed URL 생성 실패: ${name}`);
       }
 
-      const res = await fetch(urlData.signedUrl);
+      const res = await fetch(urlData!.signedUrl);
       if (!res.ok) {
         console.error(`[processDatasetAction][${taskNumber}] PDF 다운로드 실패:`, name, res.status);
         throw new Error(`PDF 다운로드 실패: ${name} (HTTP ${res.status})`);

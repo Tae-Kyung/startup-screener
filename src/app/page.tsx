@@ -404,11 +404,11 @@ export default function Home() {
         if (projectsRes.success) setProjects(projectsRes.data);
       }
     } catch (error: any) {
-      if (error.code === '42703' || error.message?.includes('column')) {
+      if (error.code === '42703' || error.code === 'PGRST204' || error.message?.includes('column')) {
         const migRes = await runMigrationAction();
         if (!migRes.success) setSchemaError({ message: migRes.error || "Schema error", sql: migRes.sql || "" });
       } else {
-        alert(lang === 'ko' ? "설정 저장에 실패했습니다." : "Failed to save settings.");
+        alert(`설정 저장에 실패했습니다.\n코드: ${error.code}\n메시지: ${error.message}`);
       }
     } finally {
       setIsUpdatingCriteria(false);
@@ -522,7 +522,16 @@ export default function Home() {
           // Excel은 작으므로 기존대로 base64, PDF는 Supabase에 직접 업로드
           const excelBase64 = excelFile ? await toBase64(excelFile) : null;
 
-          const pdfFiles = taskGroups.get(taskNumber)!;
+          const allPdfFiles = taskGroups.get(taskNumber)!;
+          // 표준 서류(숫자 시작) 우선 정렬, 최대 5개 제한 (OpenAI 컨텍스트 초과 방지)
+          const pdfFiles = [...allPdfFiles]
+            .sort((a, b) => {
+              const aStd = /^\d/.test(a.name) ? 0 : 1;
+              const bStd = /^\d/.test(b.name) ? 0 : 1;
+              if (aStd !== bStd) return aStd - bStd;
+              return a.size - b.size;
+            })
+            .slice(0, 5);
           // 서버에서 서명된 업로드 URL 생성 (RLS 우회)
           const paths = pdfFiles.map((file, idx) => {
             const ext = file.name.lastIndexOf('.') >= 0 ? file.name.slice(file.name.lastIndexOf('.')) : '.pdf';
