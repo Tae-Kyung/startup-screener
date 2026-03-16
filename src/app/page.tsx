@@ -464,7 +464,7 @@ export default function Home() {
         excelFile = file;
       } else if (basename.endsWith('.pdf') && parts.length >= 2) {
         const folderName = parts[parts.length - 2];
-        const taskNumber = folderName.replace(/_.*$/, '');
+        const taskNumber = folderName.match(/^\(?(\d+)\)?/)?.[1] ?? folderName.replace(/_.*$/, '');
         if (!taskGroups.has(taskNumber)) taskGroups.set(taskNumber, []);
         taskGroups.get(taskNumber)!.push(file);
       }
