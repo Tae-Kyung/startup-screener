@@ -501,9 +501,9 @@ export default function Home() {
       await cleanupStorageAction().catch(() => {});
 
       // ── Excel 필드 기존 레코드 동기화 (빈 값 채우기) ──────────────
-      if (excelFile) {
-        const excelBase64 = await toBase64(excelFile);
-        await syncExcelDataAction(excelBase64, selectedProject.id).catch(() => {});
+      const sharedExcelBase64 = excelFile ? await toBase64(excelFile) : null;
+      if (sharedExcelBase64) {
+        await syncExcelDataAction(sharedExcelBase64, selectedProject.id).catch(() => {});
       }
 
       // ── 업로드 전 이미 처리된 과제 사전 조회 ─────────────────────
@@ -514,13 +514,12 @@ export default function Home() {
       }
 
       // ── 최대 3개 동시 병렬 처리 (worker pool) ────────────────────
-      const CONCURRENCY = 3;
+      const CONCURRENCY = 6;
       const queue = taskNumbers.filter(t => !alreadyDoneSet.has(t));
 
       const processTask = async (taskNumber: string) => {
         try {
-          // Excel은 작으므로 기존대로 base64, PDF는 Supabase에 직접 업로드
-          const excelBase64 = excelFile ? await toBase64(excelFile) : null;
+          const excelBase64 = sharedExcelBase64;
 
           const allPdfFiles = taskGroups.get(taskNumber)!;
           // 표준 서류(숫자 시작) 우선 정렬, 최대 5개 제한 (OpenAI 컨텍스트 초과 방지)
