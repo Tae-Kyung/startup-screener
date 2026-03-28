@@ -3,7 +3,6 @@ import type { ApplicantData } from '@/lib/excel-utils';
 import { analyzePDFsWithOpenAI } from '@/lib/llm-engine';
 import { createClient } from '@/lib/supabase/server';
 import { createClient as createAdminClient } from '@supabase/supabase-js';
-import { perfLog } from '@/lib/perf-logger';
 import OpenAI from 'openai';
 
 export const maxDuration = 300;
@@ -53,7 +52,7 @@ export async function POST(request: NextRequest) {
       .eq('id', projectId)
       .maybeSingle();
     if (!projectExists) {
-      perfLog(`[PERF][${taskNumber}] 오류: projectId(${projectId})가 DB에 존재하지 않음`);
+      console.log(`[PERF][${taskNumber}] 오류: projectId(${projectId})가 DB에 존재하지 않음`);
       return NextResponse.json({ error: '유효하지 않은 프로젝트입니다.' }, { status: 400 });
     }
   }
@@ -72,7 +71,7 @@ export async function POST(request: NextRequest) {
 
   // ── 이미 처리된 과제는 스킵 ──────────────────────────────────
   if (existing?.llm_status === 'Pass' || existing?.llm_status === 'Fail') {
-    perfLog(`[PERF][${taskNumber}] 중복 요청 차단 (이미 ${existing.llm_status})`);
+    console.log(`[PERF][${taskNumber}] 중복 요청 차단 (이미 ${existing.llm_status})`);
     return NextResponse.json({
       pass: existing.final_status === 'Approved' ? 1 : 0,
       fail: existing.final_status === 'Rejected' ? 1 : 0,
@@ -125,7 +124,7 @@ export async function POST(request: NextRequest) {
       openaiFileIds.push(uploaded.id);
       return { name, fileId: uploaded.id };
     }));
-    perfLog(`[PERF][${taskNumber}] OpenAI 파일 업로드: ${Date.now() - _tu}ms (${pdfPaths.length}개)`);
+    console.log(`[PERF][${taskNumber}] OpenAI 파일 업로드: ${Date.now() - _tu}ms (${pdfPaths.length}개)`);
 
     // Supabase 파일 즉시 삭제
     if (pdfPaths.length > 0) {
@@ -146,7 +145,7 @@ export async function POST(request: NextRequest) {
       project?.criteria ?? undefined,
       project?.model || 'gpt-4o'
     );
-    perfLog(`[PERF][${taskNumber}] LLM 분석: ${Date.now() - _tl}ms → ${llmResult.status}`);
+    console.log(`[PERF][${taskNumber}] LLM 분석: ${Date.now() - _tl}ms → ${llmResult.status}`);
 
     const finalStatus =
       llmResult.status === 'Pass' ? 'Approved'
@@ -217,12 +216,12 @@ export async function POST(request: NextRequest) {
       });
       if (error) throw error;
     }
-    perfLog(`[PERF][${taskNumber}] DB 저장: ${Date.now() - _td}ms | 총 서버 처리: ${Date.now() - _t0}ms`);
+    console.log(`[PERF][${taskNumber}] DB 저장: ${Date.now() - _td}ms | 총 서버 처리: ${Date.now() - _t0}ms`);
 
   } catch (err) {
     pending++;
     const errMsg = err instanceof Error ? err.message : (typeof err === 'object' ? JSON.stringify(err) : String(err));
-    perfLog(`[PERF][${taskNumber}] 처리 오류: ${errMsg}`);
+    console.log(`[PERF][${taskNumber}] 처리 오류: ${errMsg}`);
     try {
       if (existingId) {
         await supabase.from('screen_applicants').update({

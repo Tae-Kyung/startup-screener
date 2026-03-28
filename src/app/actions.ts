@@ -7,19 +7,6 @@ import { createClient as createAdminClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
-import { perfLog, clearPerfLog } from '@/lib/perf-logger';
-
-// ================================================================
-// 성능 로그 (클라이언트 → 서버 브릿지)
-// ================================================================
-export async function initPerfLogAction(): Promise<void> {
-  clearPerfLog();
-}
-
-export async function clientPerfLogAction(message: string): Promise<void> {
-  perfLog(`[CLIENT] ${message}`);
-}
-
 // ----------------------------------------------------------------
 // 유틸: 배치 처리 (Rate Limit 방지용 5건씩 순차 처리)
 // ----------------------------------------------------------------
@@ -977,7 +964,7 @@ export async function processDatasetAction(payload: {
       openaiFileIds.push(uploaded.id);
       return { name, fileId: uploaded.id };
     }));
-    perfLog(`[PERF][${taskNumber}] OpenAI 파일 업로드: ${Date.now() - _tu}ms (${pdfPaths.length}개)`);
+    console.log(`[PERF][${taskNumber}] OpenAI 파일 업로드: ${Date.now() - _tu}ms (${pdfPaths.length}개)`);
 
     // OpenAI 업로드 완료 즉시 Supabase 파일 삭제 (타임아웃 대비)
     if (pdfPaths.length > 0) {
@@ -998,7 +985,7 @@ export async function processDatasetAction(payload: {
       project?.criteria ?? undefined,
       project?.model || 'gpt-4o'
     );
-    perfLog(`[PERF][${taskNumber}] LLM 분석: ${Date.now() - _tl}ms → ${llmResult.status}`);
+    console.log(`[PERF][${taskNumber}] LLM 분석: ${Date.now() - _tl}ms → ${llmResult.status}`);
 
     const finalStatus =
       llmResult.status === 'Pass' ? 'Approved'
@@ -1071,12 +1058,12 @@ export async function processDatasetAction(payload: {
       });
       if (error) throw error;
     }
-    perfLog(`[PERF][${taskNumber}] DB 저장: ${Date.now() - _td}ms | 총 서버 처리: ${Date.now() - _t0}ms`);
+    console.log(`[PERF][${taskNumber}] DB 저장: ${Date.now() - _td}ms | 총 서버 처리: ${Date.now() - _t0}ms`);
   } catch (err) {
     pending++;
     const errMsg = err instanceof Error ? err.message : (typeof err === 'object' ? JSON.stringify(err) : String(err));
     console.error(`[processDatasetAction][${taskNumber}] 처리 실패:`, err);
-    perfLog(`[PERF][${taskNumber}] 처리 오류: ${errMsg}`);
+    console.log(`[PERF][${taskNumber}] 처리 오류: ${errMsg}`);
     try {
       if (existingId) {
         await supabase.from('screen_applicants').update({
