@@ -7,6 +7,18 @@ import { createClient as createAdminClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
+import { perfLog, clearPerfLog } from '@/lib/perf-logger';
+
+// ================================================================
+// 성능 로그 (클라이언트 → 서버 브릿지)
+// ================================================================
+export async function initPerfLogAction(): Promise<void> {
+  clearPerfLog();
+}
+
+export async function clientPerfLogAction(message: string): Promise<void> {
+  perfLog(`[CLIENT] ${message}`);
+}
 
 // ----------------------------------------------------------------
 // 유틸: 배치 처리 (Rate Limit 방지용 5건씩 순차 처리)
@@ -682,7 +694,8 @@ export async function cleanupStorageAction(): Promise<void> {
 
   if (!taskFolders?.length) return;
 
-  for (const tf of taskFolders) {
+  // 폴더마다 순차 처리 대신 병렬 처리 (list + remove 동시 실행)
+  await Promise.all(taskFolders.map(async (tf) => {
     const prefix = `${user.id}/${tf.name}`;
     const { data: files } = await adminSupabase.storage
       .from('pdf-temp')
@@ -693,7 +706,7 @@ export async function cleanupStorageAction(): Promise<void> {
         .from('pdf-temp')
         .remove(files.map(f => `${prefix}/${f.name}`));
     }
-  }
+  }));
 }
 
 // ----------------------------------------------------------------
@@ -702,7 +715,7 @@ export async function cleanupStorageAction(): Promise<void> {
 export async function syncExcelDataAction(
   excelBase64: string,
   projectId: string
-): Promise<{ updated: number }> {
+): Promise<{ updated: number; excelDataByTask: Record<string, Omit<ApplicantData, 'raw'>> }> {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('로그인이 필요합니다.');
@@ -718,6 +731,12 @@ export async function syncExcelDataAction(
   const refDate = project?.reference_date ? new Date(project.reference_date) : undefined;
   const applicants = parseExcel(buf, refDate);
 
+  // task_number → 파싱된 데이터 맵 (raw 제외, 직렬화 안전)
+  const excelDataByTask: Record<string, Omit<ApplicantData, 'raw'>> = {};
+  for (const { raw: _raw, ...rest } of applicants) {
+    excelDataByTask[rest.taskNumber] = rest;
+  }
+
   const sanitizeBD = (bd?: string): string | null => {
     if (!bd) return null;
     if (/^\d{4}[\.\-]\d{2}[\.\-]\d{2}$/.test(bd)) return bd.replace(/\./g, '-');
@@ -725,9 +744,9 @@ export async function syncExcelDataAction(
     return null;
   };
 
-  let updated = 0;
-  for (const app of applicants) {
-    const { error } = await supabase
+  // N개 UPDATE를 순차 대신 병렬 실행 (DB 왕복 횟수는 같지만 대기 시간 단축)
+  const results = await Promise.all(applicants.map(app =>
+    supabase
       .from('screen_applicants')
       .update({
         name: app.name || undefined,
@@ -743,11 +762,11 @@ export async function syncExcelDataAction(
       })
       .eq('project_id', projectId)
       .eq('user_id', user.id)
-      .eq('task_number', app.taskNumber);
-    if (!error) updated++;
-  }
+      .eq('task_number', app.taskNumber)
+  ));
+  const updated = results.filter(r => !r.error).length;
 
-  return { updated };
+  return { updated, excelDataByTask };
 }
 
 // ----------------------------------------------------------------
@@ -770,6 +789,44 @@ export async function getSkippedTasksAction(
     .in('llm_status', ['Pass', 'Fail']);
 
   return new Set((data ?? []).map((r: any) => String(r.task_number)));
+}
+
+// ----------------------------------------------------------------
+// 분석 시작 전 일괄 사전 조회 (DB 쿼리 2회로 N회 절감)
+// ----------------------------------------------------------------
+export async function prefetchForProcessingAction(
+  taskNumbers: string[],
+  projectId: string
+): Promise<{
+  project: { criteria: string | null; model: string | null; reference_date: string | null } | null;
+  existingMap: Record<string, { id: string; llm_status: string; final_status: string }>;
+}> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('로그인이 필요합니다.');
+
+  // 쿼리 1: 프로젝트 설정
+  const { data: project } = await supabase
+    .from('screen_projects')
+    .select('criteria, model, reference_date')
+    .eq('id', projectId)
+    .eq('user_id', user.id)
+    .single();
+
+  // 쿼리 2: 처리 대상 과제의 기존 레코드 일괄 조회
+  const { data: existing } = await supabase
+    .from('screen_applicants')
+    .select('task_number, id, llm_status, final_status')
+    .eq('project_id', projectId)
+    .eq('user_id', user.id)
+    .in('task_number', taskNumbers);
+
+  const existingMap: Record<string, { id: string; llm_status: string; final_status: string }> = {};
+  for (const row of (existing ?? [])) {
+    existingMap[row.task_number] = { id: row.id, llm_status: row.llm_status, final_status: row.final_status };
+  }
+
+  return { project: project ?? null, existingMap };
 }
 
 // ----------------------------------------------------------------
@@ -807,25 +864,38 @@ export async function getSignedUploadUrlsAction(
 export async function processDatasetAction(payload: {
   taskNumber: string;
   excelBase64: string | null;
+  excelData?: Omit<ApplicantData, 'raw'> | null;
   pdfPaths: Array<{ name: string; storagePath: string }>;
   projectId: string;
+  prefetched?: {
+    project: { criteria: string | null; model: string | null; reference_date: string | null } | null;
+    existing: { id: string; llm_status: string; final_status: string } | null;
+  };
 }): Promise<{ pass: number; fail: number; pending: number; skipped?: boolean }> {
-  const { taskNumber, excelBase64, pdfPaths, projectId } = payload;
+  const { taskNumber, excelBase64, excelData: excelDataParam, pdfPaths, projectId, prefetched } = payload;
+  const _t0 = Date.now();
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('로그인이 필요합니다.');
 
-  const { data: project } = await supabase
-    .from('screen_projects')
-    .select('criteria, model, reference_date')
-    .eq('id', projectId)
-    .eq('user_id', user.id)
-    .single();
+  // ── 프로젝트 설정: 사전 조회 값 우선 사용 ───────────────────
+  let project = prefetched?.project;
+  if (project === undefined) {
+    const { data } = await supabase
+      .from('screen_projects')
+      .select('criteria, model, reference_date')
+      .eq('id', projectId)
+      .eq('user_id', user.id)
+      .single();
+    project = data ?? null;
+  }
 
-  // ── Excel 파싱 ───────────────────────────────────────────────
+  // ── Excel 데이터: 사전 파싱 값 우선, 없으면 base64 파싱 ──────
   const excelMap = new Map<string, ReturnType<typeof parseExcel>[number]>();
-  if (excelBase64) {
+  if (excelDataParam) {
+    excelMap.set(taskNumber, excelDataParam as ReturnType<typeof parseExcel>[number]);
+  } else if (excelBase64) {
     const buf = Buffer.from(excelBase64, 'base64');
     const refDate = project?.reference_date ? new Date(project.reference_date) : undefined;
     for (const app of parseExcel(buf, refDate)) {
@@ -833,14 +903,18 @@ export async function processDatasetAction(payload: {
     }
   }
 
-  // ── 기존 DB 레코드 확인 ──────────────────────────────────────
-  const { data: existing } = await supabase
-    .from('screen_applicants')
-    .select('id, llm_status, final_status')
-    .eq('project_id', projectId)
-    .eq('user_id', user.id)
-    .eq('task_number', taskNumber)
-    .single();
+  // ── 기존 DB 레코드: 사전 조회 값 우선 사용 ───────────────────
+  let existing = prefetched?.existing !== undefined ? prefetched.existing : undefined;
+  if (existing === undefined) {
+    const { data } = await supabase
+      .from('screen_applicants')
+      .select('id, llm_status, final_status')
+      .eq('project_id', projectId)
+      .eq('user_id', user.id)
+      .eq('task_number', taskNumber)
+      .single();
+    existing = data ?? null;
+  }
   const existingId = existing?.id ?? null;
 
   // ── 이미 처리된 과제는 스킵 ──────────────────────────────────
@@ -872,6 +946,7 @@ export async function processDatasetAction(payload: {
 
   try {
     // 1. Supabase signed URL 생성 → OpenAI Files API 업로드
+    const _tu = Date.now();
     const pdfsForAnalysis = await Promise.all(pdfPaths.map(async ({ name, storagePath }) => {
       // 업로드 직후 일시적으로 파일이 조회 안 될 수 있으므로 최대 3회 재시도
       let urlData: { signedUrl: string } | null = null;
@@ -902,6 +977,7 @@ export async function processDatasetAction(payload: {
       openaiFileIds.push(uploaded.id);
       return { name, fileId: uploaded.id };
     }));
+    perfLog(`[PERF][${taskNumber}] OpenAI 파일 업로드: ${Date.now() - _tu}ms (${pdfPaths.length}개)`);
 
     // OpenAI 업로드 완료 즉시 Supabase 파일 삭제 (타임아웃 대비)
     if (pdfPaths.length > 0) {
@@ -909,6 +985,7 @@ export async function processDatasetAction(payload: {
     }
 
     // 2. LLM 분석
+    const _tl = Date.now();
     const llmResult = await analyzePDFsWithOpenAI(
       pdfsForAnalysis,
       {
@@ -918,9 +995,10 @@ export async function processDatasetAction(payload: {
         residence: excelData?.residence,
         birthDate: excelData?.birthDate,
       },
-      project?.criteria,
+      project?.criteria ?? undefined,
       project?.model || 'gpt-4o'
     );
+    perfLog(`[PERF][${taskNumber}] LLM 분석: ${Date.now() - _tl}ms → ${llmResult.status}`);
 
     const finalStatus =
       llmResult.status === 'Pass' ? 'Approved'
@@ -953,6 +1031,7 @@ export async function processDatasetAction(payload: {
       ? checkRegional(resolvedResidence ?? '')
       : checkRegional(resolvedLocation ?? '');
 
+    const _td = Date.now();
     if (existingId) {
       const { error } = await supabase.from('screen_applicants').update({
         name: resolvedName,
@@ -992,10 +1071,12 @@ export async function processDatasetAction(payload: {
       });
       if (error) throw error;
     }
+    perfLog(`[PERF][${taskNumber}] DB 저장: ${Date.now() - _td}ms | 총 서버 처리: ${Date.now() - _t0}ms`);
   } catch (err) {
     pending++;
-    const errMsg = err instanceof Error ? err.message : String(err);
+    const errMsg = err instanceof Error ? err.message : (typeof err === 'object' ? JSON.stringify(err) : String(err));
     console.error(`[processDatasetAction][${taskNumber}] 처리 실패:`, err);
+    perfLog(`[PERF][${taskNumber}] 처리 오류: ${errMsg}`);
     try {
       if (existingId) {
         await supabase.from('screen_applicants').update({

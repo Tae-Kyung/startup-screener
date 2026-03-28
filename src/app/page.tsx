@@ -14,6 +14,7 @@ import {
   runMigrationAction, reEvaluateApplicantsAction, finalizeApplicantAction,
   exportCheckpointsAction, processDatasetAction, getSignedUploadUrlsAction,
   getSkippedTasksAction, syncExcelDataAction, cleanupStorageAction,
+  initPerfLogAction, clientPerfLogAction, prefetchForProcessingAction,
 } from "./actions";
 import { ApplicantData } from "@/lib/excel-utils";
 import { DEFAULT_PROMPT_TEMPLATE } from "@/lib/prompt-defaults";
@@ -291,7 +292,11 @@ export default function Home() {
       const res = await getProjectsAction();
       if (res.success) {
         setProjects(res.data || []);
-        if (res.data?.length && !selectedProject) handleSelectProject(res.data[0]);
+        if (res.data?.length && !selectedProject) {
+          const savedId = localStorage.getItem('selectedProjectId');
+          const toSelect = (savedId && res.data.find((p: any) => p.id === savedId)) || res.data[0];
+          handleSelectProject(toSelect);
+        }
       }
     } catch (e) {
       console.error("Failed to load projects", e);
@@ -300,6 +305,7 @@ export default function Home() {
 
   const handleSelectProject = async (project: any) => {
     setSelectedProject(project);
+    localStorage.setItem('selectedProjectId', project.id);
     setProjectCriteria(project.criteria || "");
     setProjectPrompt(project.prompt || DEFAULT_PROMPT_TEMPLATE);
     setProjectModel(project.model || "gpt-4o");
@@ -322,6 +328,7 @@ export default function Home() {
       const res = await createProjectAction(newProjectTitle);
       if (res.success) {
         setProjects([res.data, ...projects]);
+        localStorage.setItem('selectedProjectId', res.data.id);
         setSelectedProject(res.data);
         setProjectCriteria("");
         setData([]);
@@ -497,30 +504,55 @@ export default function Home() {
       });
 
     try {
-      // ── 이전 처리 실패로 남은 잔여 파일 정리 ─────────────────────
-      await cleanupStorageAction().catch(() => {});
-
-      // ── Excel 필드 기존 레코드 동기화 (빈 값 채우기) ──────────────
-      const sharedExcelBase64 = excelFile ? await toBase64(excelFile) : null;
-      if (sharedExcelBase64) {
-        await syncExcelDataAction(sharedExcelBase64, selectedProject.id).catch(() => {});
+      // 세션 만료 사전 방지: 처리 전 토큰 갱신
+      const { error: sessionError } = await supabase.auth.refreshSession();
+      if (sessionError) {
+        alert('세션이 만료되었습니다. 페이지를 새로고침한 후 다시 시도해주세요.');
+        return;
       }
 
-      // ── 업로드 전 이미 처리된 과제 사전 조회 ─────────────────────
-      const alreadyDoneSet = await getSkippedTasksAction(taskNumbers, selectedProject.id);
+      const t0 = performance.now();
+      await initPerfLogAction();
+      clientPerfLogAction(`▶ 폴더 업로드 시작 — 과제 ${taskNumbers.length}건`);
+
+      // ── 이전 처리 실패로 남은 잔여 파일 정리 ─────────────────────
+      const tc = performance.now();
+      await cleanupStorageAction().catch(() => {});
+      clientPerfLogAction(`cleanupStorageAction: ${(performance.now() - tc).toFixed(0)}ms`);
+
+      // ── Excel 파싱 + 기존 레코드 동기화 ──────────────────────────
+      const sharedExcelBase64 = excelFile ? await toBase64(excelFile) : null;
+      let excelDataByTask: Record<string, any> = {};
+      if (sharedExcelBase64) {
+        const t1 = performance.now();
+        const syncResult = await syncExcelDataAction(sharedExcelBase64, selectedProject.id).catch(() => ({ updated: 0, excelDataByTask: {} }));
+        excelDataByTask = syncResult.excelDataByTask;
+        clientPerfLogAction(`syncExcelDataAction: ${(performance.now() - t1).toFixed(0)}ms`);
+      }
+
+      // ── 프로젝트 설정 + 기존 레코드 일괄 사전 조회 (DB 쿼리 2회) ──
+      const t2 = performance.now();
+      const { project: prefetchedProject, existingMap } = await prefetchForProcessingAction(taskNumbers, selectedProject.id);
+      clientPerfLogAction(`prefetchForProcessingAction: ${(performance.now() - t2).toFixed(0)}ms`);
+
+      const alreadyDoneSet = new Set(
+        Object.entries(existingMap)
+          .filter(([, r]) => r.llm_status === 'Pass' || r.llm_status === 'Fail')
+          .map(([tn]) => tn)
+      );
       if (alreadyDoneSet.size > 0) {
         skipped += alreadyDoneSet.size;
         completed += alreadyDoneSet.size;
       }
+      clientPerfLogAction(`준비 완료 — ${(performance.now() - t0).toFixed(0)}ms 소요, 처리 대상 ${taskNumbers.length - alreadyDoneSet.size}건 / 건너뜀 ${alreadyDoneSet.size}건`);
 
-      // ── 최대 3개 동시 병렬 처리 (worker pool) ────────────────────
-      const CONCURRENCY = 6;
+      // ── 최대 2개 동시 병렬 처리 (fetch API 병렬 → 진정한 동시 실행) ──
+      const CONCURRENCY = 4;
       const queue = taskNumbers.filter(t => !alreadyDoneSet.has(t));
 
       const processTask = async (taskNumber: string) => {
+        const tt = performance.now();
         try {
-          const excelBase64 = sharedExcelBase64;
-
           const allPdfFiles = taskGroups.get(taskNumber)!;
           // 표준 서류(숫자 시작) 우선 정렬, 최대 5개 제한 (OpenAI 컨텍스트 초과 방지)
           const pdfFiles = [...allPdfFiles]
@@ -530,7 +562,7 @@ export default function Home() {
               if (aStd !== bStd) return aStd - bStd;
               return a.size - b.size;
             })
-            .slice(0, 5);
+            .slice(0, 3);
           // 서버에서 서명된 업로드 URL 생성 (RLS 우회)
           const paths = pdfFiles.map((file, idx) => {
             const ext = file.name.lastIndexOf('.') >= 0 ? file.name.slice(file.name.lastIndexOf('.')) : '.pdf';
@@ -539,6 +571,7 @@ export default function Home() {
           const signedUrls = await getSignedUploadUrlsAction(paths);
 
           // 서명된 URL로 브라우저에서 직접 업로드
+          const tp = performance.now();
           const pdfPaths = await Promise.all(pdfFiles.map(async (file, idx) => {
             const { token, path: storagePath } = signedUrls[idx];
             let uploadError: any = null;
@@ -553,13 +586,25 @@ export default function Home() {
             if (uploadError) throw new Error(`PDF 업로드 실패 (${file.name}): ${uploadError.message}`);
             return { name: file.name, storagePath };
           }));
+          clientPerfLogAction(`[${taskNumber}] Supabase 업로드: ${(performance.now() - tp).toFixed(0)}ms (${pdfFiles.length}개)`);
 
-          const result = await processDatasetAction({
-            taskNumber,
-            excelBase64,
-            pdfPaths,
-            projectId: selectedProject.id,
+          const ta = performance.now();
+          const resp = await fetch(`/api/process-dataset?projectId=${selectedProject.id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              taskNumber,
+              excelData: excelDataByTask[taskNumber] ?? null,
+              pdfPaths,
+              prefetched: {
+                project: prefetchedProject,
+                existing: existingMap[taskNumber] ?? null,
+              },
+            }),
           });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+          const result = await resp.json();
+          clientPerfLogAction(`[${taskNumber}] fetch /api/process-dataset: ${(performance.now() - ta).toFixed(0)}ms → ${result.skipped ? 'SKIPPED' : `pass=${result.pass} fail=${result.fail} pending=${result.pending}`}`);
           if (result.skipped) {
             skipped++;
           } else {
@@ -569,11 +614,17 @@ export default function Home() {
           }
         } catch (err: any) {
           console.error(`[${taskNumber}] 처리 오류:`, err);
-          alert(`[${taskNumber}] 오류: ${err.message}`);
+          clientPerfLogAction(`[${taskNumber}] 오류: ${err?.message ?? String(err)}`);
+          if (err?.message?.includes('로그인이 필요합니다')) {
+            queue.length = 0; // 남은 queue 비워서 모든 worker 중단
+            alert('세션이 만료되었습니다. 페이지를 새로고침한 후 다시 시도해주세요.');
+            return;
+          }
           pending++;
         }
 
         completed++;
+        clientPerfLogAction(`[${taskNumber}] 과제 완료: ${(performance.now() - tt).toFixed(0)}ms (전체 진행 ${completed}/${taskNumbers.length})`);
         setFolderProgress({
           current: completed,
           total: taskNumbers.length,
@@ -590,6 +641,7 @@ export default function Home() {
       });
 
       await Promise.allSettled(workers);
+      await clientPerfLogAction(`■ 전체 완료: ${((performance.now() - t0) / 1000).toFixed(1)}초 — pass=${pass} fail=${fail} pending=${pending} skipped=${skipped}`);
 
       setUploadSummary({
         total: taskNumbers.length,
