@@ -831,16 +831,29 @@ export async function getSignedUploadUrlsAction(
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  const results = await Promise.all(paths.map(async (path) => {
-    const { data, error } = await adminSupabase.storage
-      .from('pdf-temp')
-      .createSignedUploadUrl(path);
-    if (error || !data) {
+  const createUrlWithRetry = async (path: string) => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const { data, error } = await adminSupabase.storage
+        .from('pdf-temp')
+        .createSignedUploadUrl(path);
+      if (!error && data) return { path, signedUrl: data.signedUrl, token: data.token };
+      if (attempt < 3 && (error as { status?: number })?.status === 502) {
+        await new Promise(r => setTimeout(r, 500 * attempt));
+        continue;
+      }
       console.error('[getSignedUploadUrlsAction] URL 생성 실패:', path, error);
       throw new Error(`업로드 URL 생성 실패: ${error?.message}`);
     }
-    return { path, signedUrl: data.signedUrl, token: data.token };
-  }));
+    throw new Error('업로드 URL 생성 실패: 최대 재시도 초과');
+  };
+
+  // 5개씩 나눠서 요청 (동시 폭탄 방지)
+  const results: Array<{ path: string; signedUrl: string; token: string }> = [];
+  for (let i = 0; i < paths.length; i += 5) {
+    const chunk = paths.slice(i, i + 5);
+    const chunkResults = await Promise.all(chunk.map(createUrlWithRetry));
+    results.push(...chunkResults);
+  }
 
   return results;
 }
