@@ -559,7 +559,7 @@ export default function Home() {
               if (aStd !== bStd) return aStd - bStd;
               return a.size - b.size;
             })
-            .slice(0, 3);
+            .slice(0, 20);
           // 서버에서 서명된 업로드 URL 생성 (RLS 우회)
           const paths = pdfFiles.map((file, idx) => {
             const ext = file.name.lastIndexOf('.') >= 0 ? file.name.slice(file.name.lastIndexOf('.')) : '.pdf';
