@@ -470,8 +470,17 @@ export default function Home() {
       if (basename.endsWith('.xlsx')) {
         excelFile = file;
       } else if (basename.endsWith('.pdf') && parts.length >= 2) {
-        const folderName = parts[parts.length - 2];
-        const taskNumber = folderName.match(/^\(?(\d+)\)?/)?.[1] ?? folderName.replace(/_.*$/, '');
+        // 하위 폴더(예: 발표평가 증빙서류)에 PDF가 있을 수 있으므로
+        // 숫자로 시작하는 과제번호 폴더를 역순으로 탐색
+        let taskNumber: string | null = null;
+        for (let i = parts.length - 2; i >= 0; i--) {
+          const m = parts[i].match(/^\d*\.?\s*\(?(\d{5,})\)?/);
+          if (m) { taskNumber = m[1]; break; }
+        }
+        if (!taskNumber) {
+          const folderName = parts[parts.length - 2];
+          taskNumber = folderName.match(/^\(?(\d+)\)?/)?.[1] ?? folderName.replace(/_.*$/, '');
+        }
         if (!taskGroups.has(taskNumber)) taskGroups.set(taskNumber, []);
         taskGroups.get(taskNumber)!.push(file);
       }
