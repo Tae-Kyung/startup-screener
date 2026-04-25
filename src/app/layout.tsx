@@ -4,6 +4,8 @@ import type { Metadata } from "next";
 export const maxDuration = 300;
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from "@/components/ui/sonner";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -21,13 +23,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko" className="scroll-smooth" data-scroll-behavior="smooth">
+    <html lang="ko" className="scroll-smooth" suppressHydrationWarning>
       <body
         className={`${inter.variable} font-sans antialiased bg-background text-foreground min-h-screen`}
       >
-        <div className="relative flex min-h-screen flex-col">
-          {children}
-        </div>
+        <ThemeProvider defaultTheme="system" storageKey="theme">
+          <div className="relative flex min-h-screen flex-col">
+            {children}
+          </div>
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   );
